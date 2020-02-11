@@ -1,6 +1,6 @@
 --[[
 By Mohamed RACHID
-Please follow the license "GNU Lesser General Public License v3".
+Please follow the license "Mozilla Public License 2.0" or greater. https://www.mozilla.org/en-US/MPL/2.0/
 To be simple: if you distribute a modified version then you share the sources.
 
 Limitations:
@@ -9,22 +9,15 @@ Limitations:
 -- https://developer.valvesoftware.com/wiki/Source_BSP_File_Format
 -- https://developer.valvesoftware.com/wiki/Source_BSP_File_Format/Game-Specific
 -- TODO - objets de contexte contenant :
-	-- id Stéam du jeu ou 0
-	-- boutisme
+	-- id Stéam du jeu ou 0 ?
 -- TODO - membres par défaut, avec commentaires descriptifs
--- TODO - les lumps doivent pouvoir être substitués par :
-	-- 1 string en mémoire
-	-- 1 autre flux de fichier
-	-- => listage pour l'entrée
-	-- => listage pour la sortie
--- TODO - fermer fichiers
-	-- suppression du contexte
-	-- remplacement d'un lump (si flux différent de la carte d'origine)
-	-- suppression d'un lump (si flux différent de la carte d'origine)
-	-- ?
+-- TODO - fichier journal
+-- TODO - attention suppression / édition lumps dupliqués vers 1 unique charge utile (HDR etc.)
+-- TODO - interdire remplacement (sans effet) & suppression (sans effet) de LUMP_GAME_LUMP
+-- TODO - la compression de lumps se fait par carte et non par lump, apparemment => activer compression par défaut lors du remplacement si nécessaire
 
 
-print("map_manipulation_tool_api.lua")
+print("map_manipulation_tool_api")
 
 
 -- Local copies, not changing how the code is written, for greater loop efficiency:
@@ -127,7 +120,7 @@ do
 			
 			if mode == "rb" then
 				instance._wrapped = wrapped
-				instance._length = string.len(wrapped)
+				instance._length = #wrapped
 				instance._cursor = 0
 			else
 				error("Argument mode: invalid value")
@@ -243,7 +236,7 @@ do
 		end
 		local actualSize = string.sub(lzmaVbsp, 5, 8) -- 32-bit little-endian
 		local lzmaSize = data_to_le(string.sub(lzmaVbsp, 9, 12)) -- 32-bit little-endian
-		local lzmaSizeExpected = string.len(lzmaVbsp) - 17
+		local lzmaSizeExpected = #lzmaVbsp - 17
 		local properties = string.sub(lzmaVbsp, 13, 17)
 		if lzmaSize < lzmaSizeExpected then
 			print("Warning: lzmaVbspToStandard() - compressed lump with lzmaSize (" .. tostring(lzmaSize) .. " bytes) not filling the whole lump payload (" .. tostring(lzmaSizeExpected) .. " bytes)")
@@ -265,23 +258,223 @@ do
 			id = "AMZL"
 		end
 		local actualSize = string.sub(lzmaStandard, 6, 9) -- dropping most significant bits from 64-bit little-endian
-		local lzmaSize = int32_to_le_data(string.len(lzmaStandard) - 13)
+		local lzmaSize = int32_to_le_data(#lzmaStandard - 13)
 		local properties = string.sub(lzmaStandard, 1, 5)
 		return table.concat({
 			id,
 			actualSize,
 			lzmaSize,
 			properties,
-			string.sub(lzmaVbsp, 14),
+			string.sub(lzmaStandard, 14),
 		})
 	end
 end
 
+-- The asynchronous mechanism:
+local yieldIfTimeout
+do
+	-- TODO - gérer automatiquement l'ajout d'un hook pour poursuivre le traitement + callback statut + callback fini [avec info succès / échec]
+	local SysTime = SysTime
+	local coroutine_running = coroutine.running
+	local coroutine_yield = coroutine.yield
+	yieldIfTimeout = function(step, stepCount, stepProgress)
+		-- Function to be invoked by functions to support asynchronous operation
+		local work = coroutine_running()
+		if work ~= nil and work.yieldAt ~= nil and SysTime() >= work.yieldAt then
+			coroutine_yield(step, stepCount, stepProgress)
+		end
+	end
+	
+	function asyncWork(onFinishedOk, onError, onProgress, interval_s, func, ...)
+		-- Invoke the given function with the given arguments in a coroutine
+		-- onFinishedOk : onFinishedOk(vararg result)
+		-- onError : onError(string errorMessage)
+		-- onProgress : onProgress(int step, int stepCount, float stepProgress)
+		-- TODO : asynchrone pour de vrai
+		-- TODO : SERVER != CLIENT
+		-- TODO : CLIENT : stopper rendu si menu Echap visible
+		-- TODO : retourner objet avec : fonction d'annulation
+		local callData = {xpcall(func, function(errorMessage)
+			ErrorNoHalt(errorMessage .. "\n" .. debug.traceback())
+			return errorMessage
+		end, ...)}
+		local success = callData[1]
+		if success then
+			if onFinishedOk then
+				onFinishedOk(unpack(callData, 2)) -- return result of func call
+			end
+		else
+			if onError then
+				onError(unpack(callData, 2)) -- return error message
+				ErrorNoHalt(callData[2])
+			end
+		end
+		return {--[[TODO]]}
+	end
+end
+
+local callSafe
+do
+	local pcall = pcall
+	local unpack = unpack
+	function callSafe(...)
+		local resultInfo = {pcall(...)}
+		if not resultInfo[1] then
+			ErrorNoHalt(resultInfo[2])
+		end
+		return unpack(resultInfo)
+	end
+end
+
+local stringToLuaString
+do
+	local string_gsub = string.gsub
+	local replacements = {
+		['\0'] = '\\0',
+		['"'] = '\\"',
+		["\\"] = "\\\\",
+	}
+	for c = 0x01, 0x1F do
+		replacements[string.char(c)] = string.format("\\x%02X", c)
+	end
+	function stringToLuaString(initial)
+		return '"' .. string_gsub(initial, '.', replacements) .. '"'
+	end
+end
+
+
+--- Entities ---
+
+--[[
+local noLuaEntityClasses = {
+	-- Crash if missing (or suspected):
+	["worldspawn"] = true,
+	["info_node"] = true, -- suspected
+	["info_node_air"] = true, -- suspected
+	["info_node_air_hint"] = true, -- suspected
+	["info_node_climb"] = true,
+	["info_node_hint"] = true,
+	-- Not working if missing:
+	["env_skypaint"] = true, -- for 2D skybox
+	["env_tonemap_controller"] = true, -- for lighting parameters (especially HDR)
+	["sky_camera"] = true, -- for 3D skybox
+}
+]]
+
+-- There are many entity classes that do not support being created in Lua: non-working state or crashes can happen.
+
+--[[
+local entityClassesWithoutModelIntoLua = {
+	-- Entity classes that do not have a model but can be moved into Lua:
+	["ambient_generic"] = true,
+	--["game_text"] = true, -- no: branding purpose
+	--["infodecal"] = true, -- no: branding purpose
+	["light"] = true,
+	--["light_spot"] = true, -- unknown
+	--["lua_run"] = true, -- no: branding & protection purposes
+	--["point_spotlight"] = true, -- unknown
+	
+	-- Spawn points [garrysmod\gamemodes\base\gamemode\player.lua]:
+	["info_player_start"] = true,
+	["info_player_deathmatch"] = true,
+	["info_player_combine"] = true,
+	["info_player_rebel"] = true,
+	["info_player_counterterrorist"] = true,
+	["info_player_terrorist"] = true,
+	["info_player_axis"] = true,
+	["info_player_allies"] = true,
+	["gmod_player_start"] = true,
+	["info_player_teamspawn"] = true,
+	["ins_spawnpoint"] = true,
+	["aoc_spawnpoint"] = true,
+	["dys_spawn_point"] = true,
+	["info_player_pirate"] = true,
+	["info_player_viking"] = true,
+	["info_player_knight"] = true,
+	["diprip_start_team_blue"] = true,
+	["diprip_start_team_red"] = true,
+	["info_player_red"] = true,
+	["info_player_blue"] = true,
+	["info_player_coop"] = true,
+	["info_player_human"] = true,
+	["info_player_zombie"] = true,
+	["info_player_zombiemaster"] = true,
+	["info_survivor_rescue"] = true,
+}
+
+local entityClassesWithModelNoLua = {
+	-- Entity classes that have a model but should not be moved into Lua:
+	["trigger_hurt"] = true, -- no: used for map protection
+	["func_occluder"] = true, -- not working
+	
+	["func_physbox"] = true, -- removed after creation?!
+	["func_door"] = true, -- investigation
+	["func_rotating"] = true, -- investigation
+	
+	["trigger_hurt"] = true, -- investigation
+	["trigger_multiple"] = true, -- investigation
+	["trigger_push"] = true, -- investigation
+}
+]]
+
+local entityClassesForceLua = {
+	-- Entity classes that should be moved into Lua despite having no model or a built-in model:
+	-- In addition, class names starting with npc_ / weapon_ / item_ are forced too.
+	["ambient_generic"] = true,
+	["env_sprite"] = true,
+	--["env_projectedtexture"] = true, -- no: branding purpose [not tested]
+	["func_breakable"] = true,
+	["func_breakable_surf"] = true,
+	["func_brush"] = true,
+	["func_button"] = true,
+	["func_door"] = true,
+	["func_door_rotating"] = true,
+	["func_movelinear"] = true,
+	["func_platrot"] = true,
+	--["func_rotating"] = true, -- investigation
+	--["game_text"] = true, -- no: branding purpose [not tested]
+	--["infodecal"] = true, -- no: branding purpose [not tested]
+	["light"] = true,
+	["light_dynamic"] = true, -- almost sure
+	--["light_spot"] = true, -- TODO - investigation
+	--["point_spotlight"] = true, -- TODO - investigation
+	--["lua_run"] = true, -- no: branding & protection purposes
+	
+	-- Spawn points [garrysmod\gamemodes\base\gamemode\player.lua]:
+	["info_player_start"] = true,
+	["info_player_deathmatch"] = true,
+	["info_player_combine"] = true,
+	["info_player_rebel"] = true,
+	["info_player_counterterrorist"] = true,
+	["info_player_terrorist"] = true,
+	["info_player_axis"] = true,
+	["info_player_allies"] = true,
+	["gmod_player_start"] = true,
+	["info_player_teamspawn"] = true,
+	["ins_spawnpoint"] = true,
+	["aoc_spawnpoint"] = true,
+	["dys_spawn_point"] = true,
+	["info_player_pirate"] = true,
+	["info_player_viking"] = true,
+	["info_player_knight"] = true,
+	["diprip_start_team_blue"] = true,
+	["diprip_start_team_red"] = true,
+	["info_player_red"] = true,
+	["info_player_blue"] = true,
+	["info_player_coop"] = true,
+	["info_player_human"] = true,
+	["info_player_zombie"] = true,
+	["info_player_zombiemaster"] = true,
+	["info_survivor_rescue"] = true,
+}
+
+local entityClassesAvoidLua = {
+	-- Entity classes that should not be moved into Lua besides having a non-built-in model:
+}
+
 
 --- Data structures ---
 
--- local lumpCIndexToName = {}
--- local lumpNameToCIndex = {}
 local lumpLuaIndexToName = {} -- +1 from the original list
 local lumpNameToLuaIndex = {} -- +1 from the original list
 do
@@ -407,6 +600,9 @@ local BaseDataStructure = {
 		local instance = {}
 		setmetatable(instance, cls)
 		
+		if context == nil then
+			error("context cannot be nil!")
+		end
 		instance.context = context
 		
 		instance.streamSrc = streamSrc
@@ -432,7 +628,6 @@ local LumpPayload = BaseDataStructure:newClass({
 	-- Wrapper around a lump payload
 	-- No content is held in here.
 	-- This class & its children are referred to in this file as: (LumpPayload|GameLumpPayload|payloadType)
-	-- TODO - attention, pour un game lump compressé il faut apparemment regarder le décalage du game lump suivant
 	
 	lumpInfoType = lump_t, -- static; nil for now (filled after lump_t definition)
 	
@@ -470,7 +665,7 @@ local LumpPayload = BaseDataStructure:newClass({
 		self:seekToPayload()
 		if self.compressed and not noDecompress then
 			payload = util.Decompress(lzmaVbspToStandard(self.streamSrc:Read(self.lumpInfoSrc.filelen)))
-			if payload == nil or string.len(payload) == 0 then
+			if payload == nil or #payload == 0 then
 				error("Could not decompress this lump")
 			end
 		else
@@ -557,7 +752,7 @@ local LumpPayload = BaseDataStructure:newClass({
 			if fillWithZeroes then
 				self:_fillWithZeroes(streamDst, payloadRoom - filelen)
 			end
-			self.lumpInfoDst = self.lumpInfoType:new(context, nil, self, nil, fileofs, filelen)
+			self.lumpInfoDst = self.lumpInfoType:new(self.context, nil, self, nil, fileofs, filelen)
 		else
 			-- Compress or decompress then copy:
 			if not self:writeTo(streamDst, withCompression, payloadRoom, noMoveToEnd, noFillWithZeroes, standardLzmaHeader) then
@@ -598,9 +793,9 @@ local LumpPayload = BaseDataStructure:newClass({
 				else
 					payloadCompressed = lzmaStandardToVbsp(self.context, util.Compress(payload))
 				end
-				uncompressedBytes = string.len(payload)
+				uncompressedBytes = #payload
 			end
-			compressedBytes = string.len(payloadCompressed)
+			compressedBytes = #payloadCompressed
 			filelen = compressedBytes
 			okayConstraint, fillWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
 			if not okayConstraint then
@@ -610,7 +805,7 @@ local LumpPayload = BaseDataStructure:newClass({
 			finalPayload = payloadCompressed
 		else
 			payload = self:readAll()
-			uncompressedBytes = string.len(payload)
+			uncompressedBytes = #payload
 			filelen = uncompressedBytes
 			okayConstraint, fillWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
 			if not okayConstraint then
@@ -629,7 +824,7 @@ local LumpPayload = BaseDataStructure:newClass({
 		if fillWithZeroes then
 			self:_fillWithZeroes(streamDst, payloadRoom - filelen)
 		end
-		self.lumpInfoDst = self.lumpInfoType:new(context, nil, self, nil, fileofs, filelen)
+		self.lumpInfoDst = self.lumpInfoType:new(self.context, nil, self, nil, fileofs, filelen)
 		if withCompression then
 			 -- apparently the only location where fourCC needs to be explicitly set
 			if self.compressed then
@@ -751,7 +946,7 @@ lump_t = BaseDataStructure:newClass({
 		return instance
 	end,
 	
-	newFromPayloadStream = function(cls, context, streamSrc, fileofs, filelen, lumpInfoSrc)
+	newFromPayloadStream = function(cls, context, streamSrc, fileofs, filelen, lumpInfoSrc) -- static method
 		-- Usage: lump_t:newFromPayloadStream(context, streamSrc, fileofs, filelen, lumpInfoSrc=nil)
 		--  Make a lump_t from its characteristics only
 		--  This is especially useful when there is no lump_t in the file that contains it.
@@ -764,7 +959,7 @@ lump_t = BaseDataStructure:newClass({
 			instance.version = lumpInfoSrc.version
 			instance.fourCC = lumpInfoSrc.fourCC
 		end
-		instance.payload = self.payloadType:new(context, streamSrc, lumpInfo)
+		instance.payload = cls.payloadType:new(context, streamSrc, instance)
 		
 		return instance
 	end,
@@ -984,7 +1179,7 @@ end
 
 BspContext = {
 	-- Context that holds a source .bsp file and its information, as well as a destination .bsp file.
-	-- TODO - gérer automatiquement l'ajout d'un hook pour poursuivre le traitement + callback statut + callback fini [avec info succès / échec]
+	-- TODO - éliminer lumpIndexesToCompress si inutile, remplacer par un booléen commun
 	
 	filenameSrc = nil, -- source file path
 	streamSrc = nil, -- source file stream
@@ -994,7 +1189,7 @@ BspContext = {
 	lumpsDst = nil, -- list of lump_t objects selected for the destination map file
 	gameLumpsDst = nil, -- list of dgamelump_t objects selected for the destination map file
 	lumpIndexesToCompress = nil, -- nil / false / true; setting for LUMP_GAME_LUMP is common for all game lumps
-	yieldAt = nil, -- when to yield a running coroutine (= minimum value of SysTime())
+	entitiesTextLua = nil, -- exported entities to Lua script
 	
 	-- to be set upon .bsp load
 	data_to_integer = nil, -- instance's function
@@ -1042,6 +1237,8 @@ BspContext = {
 		-- Set every lump / game lump as the one in self.streamSrc
 		-- Every lump must be replaced with a lump in the destination stream.
 		
+		self:_closeAllLumpStreams()
+		
 		self.lumpsDst = {}
 		for i = 1, #self.lumpsSrc do
 			-- table.insert(self.lumpsDst, lump_t:new(self, nil, nil, self.lumpsSrc[i]))
@@ -1055,19 +1252,21 @@ BspContext = {
 		end
 	end,
 	
-	yieldIfTimeout = function(self, progress)
-		if self.yieldAt ~= nil and SysTime() >= self.yieldAt then
-			coroutine.yield(progress)
+	anyCompressedInGameLumps = function(cls, gameLumps) -- static method
+		-- gameLumps: gameLumpsSrc or gameLumpsDst
+		local hasCompressedLumps = false
+		for i = 1, #gameLumps do
+			local payload = gameLumps[i].payload
+			if payload and payload.compressed then
+				hasCompressedLumps = true
+				break
+			end
 		end
+		return hasCompressedLumps
 	end,
 	
-	writeNewBsp = function(self, filenameDst, yieldEvery_s)
-		-- Note: compression / decompression is not applied if a lump is unchanged.
-		
-		local streamDst = file.Open(filenameDst, "wb", "DATA")
-		if streamDst == nil then
-			error("Unable to open data/" .. filenameDst .. " for write")
-		end
+	writeNewBsp_ = function(self, streamDst)
+		-- Internal
 		
 		-- Do local copies of lump arrays to allow future calls to writeNewBsp():
 		local lumpsDst = {}
@@ -1079,7 +1278,7 @@ BspContext = {
 			gameLumpsDst[i] = self.gameLumpsDst[i]
 		end
 		
-		-- Copy the whole source file map the destination map
+		-- Copy the whole source file map into the destination map
 		self.streamSrc:Seek(0)
 		do
 			local remainingBytes = self.streamSrc:Size()
@@ -1098,9 +1297,9 @@ BspContext = {
 			-- Works fine because same number of elements in lumpsSrc & lumpsDst
 			print("\tProcessing " .. lumpLuaIndexToName[i])
 			
-			local bypassIdentical = true
+			local bypassIdentical = true -- ignores self.lumpIndexesToCompress[i] on purpose
 			if i == LUMP_GAME_LUMP then
-				for j = 1, #gameLumpsDst do
+				for j = 1, math.max(#gameLumpsDst, #self.gameLumpsSrc) do
 					if gameLumpsDst[j] ~= self.gameLumpsSrc[j] then
 						bypassIdentical = false
 						break
@@ -1113,6 +1312,7 @@ BspContext = {
 			end
 			
 			if not bypassIdentical then
+				print("\t\tModified!")
 				local withCompression = self.lumpIndexesToCompress[i] -- true / false / nil
 				if i == LUMP_GAME_LUMP then
 					-- There is no LumpPayload object involved to write the LUMP_GAME_LUMP itself.
@@ -1121,21 +1321,14 @@ BspContext = {
 					-- Note: if all game lumps are removed, there simply will be 0 game lumps in the LUMP_GAME_LUMP.
 					
 					-- Handle the need of a null game lump if compressed game lumps:
-					local hasCompressedLumps = false
 					if #gameLumpsDst ~= 0 then
-						if withCompression then
-							hasCompressedLumps = true
-						else
-							for j = 1, #gameLumpsDst do
-								local payload = gameLumpsDst[j].payload
-								if payload and payload.compressed then
-									hasCompressedLumps = true
-									break
-								end
-							end
+						-- withCompression is common because I decided it is common to all game lumps.
+						if withCompression == nil then
+							-- I have decided that if one game lump is compressed then they will all be.
+							withCompression = self:anyCompressedInGameLumps(gameLumpsDst)
 						end
 						local lastGLump = gameLumpsDst[#gameLumpsDst]
-						if hasCompressedLumps then
+						if withCompression then
 							-- Add a trailing null gamelump if not present:
 							if lastGLump.filelen ~= 0 then
 								table.insert(gameLumpsDst, dgamelump_t:new(self, nil, false))
@@ -1178,6 +1371,7 @@ BspContext = {
 							lastGamelumpMaxOffset = self.lumpsSrc[i].fileofs + self.lumpsSrc[i].filelen
 						end
 						for j = 1, #gameLumpsDst do
+							collectgarbage()
 							print("\t\tProcessing game lump " .. int32_to_be_data(gameLumpsDst[j].id))
 							local payload = gameLumpsDst[j].payload
 							if payload ~= nil then
@@ -1222,6 +1416,7 @@ BspContext = {
 					-- Seek to the end of the whole LUMP_GAME_LUMP:
 					streamDst:Seek(endOfLump)
 				else
+					collectgarbage()
 					local payload = lumpsDst[i].payload
 					if payload ~= nil then
 						-- The lump to copy from has a payload.
@@ -1243,9 +1438,42 @@ BspContext = {
 		-- Write the file header (including lump_t's)
 		local bspHeaderDst = dheader_t:new(self, nil, self.bspHeader, lumpsDst)
 		bspHeaderDst:writeTo(streamDst)
+	end,
+	
+	_writeEntitiesTextLua = function(self, mapFilenameDst)
+		if self.entitiesTextLua then
+			collectgarbage()
+			local entitiesTextLua = self.entitiesTextLua
+			local _, _, mapName = string.find(mapFilenameDst, "([^\\/]+)%.bsp%.dat$")
+			if mapName then
+				entitiesTextLua = string.gsub(entitiesTextLua, "%%mapName%%", stringToLuaString(mapName), 1)
+			end
+			local filenameDst = string.gsub(mapFilenameDst, "%.bsp%.dat$", "", 1) .. ".lua.txt"
+			local streamDst = file.Open(filenameDst, "w", "DATA")
+			if streamDst then
+				callSafe(streamDst.Write, streamDst, entitiesTextLua)
+				streamDst:Close()
+			else
+				error('Unable to open "' .. filenameDst .. '" for write')
+			end
+		end
+	end,
+	
+	writeNewBsp = function(self, filenameDst)
+		-- Note: compression / decompression is not applied if a lump is unchanged.
 		
-		-- Close the destination file
+		local streamDst = file.Open(filenameDst, "wb", "DATA")
+		if streamDst == nil then
+			error("Unable to open data/" .. filenameDst .. " for write")
+		end
+		
+		local success, message = callSafe(self.writeNewBsp_, self, streamDst)
 		streamDst:Close()
+		if not success then
+			error(message)
+		end
+		
+		self:_writeEntitiesTextLua(filenameDst)
 	end,
 	
 	_getLump = function(self, isGameLump, id, fromDst)
@@ -1283,38 +1511,93 @@ BspContext = {
 	
 	_setDstLump = function(self, isGameLump, id, lumpInfo)
 		-- Replace a lump in self.lumpsDst or self.gameLumpsDst
+		-- Must be called to apply the lumpInfo into the destination lumps
+		-- lumpInfo: can be nil if isGameLump, for game lump removal
 		
+		local lumpInfoOld
 		if isGameLump then
 			local gameLumpIndex = #self.gameLumpsDst + 1 -- append if existing not found
 			for i, lumpInfoCurrent in ipairs(self.gameLumpsDst) do
 				if lumpInfoCurrent.id == id then
 					gameLumpIndex = i
+					lumpInfoOld = lumpInfoCurrent
 					break
 				end
 			end
-			self.gameLumpsDst[gameLumpIndex] = lumpInfo
+			if lumpInfo then
+				self.gameLumpsDst[gameLumpIndex] = lumpInfo
+			else
+				table.remove(self.gameLumpsDst, gameLumpIndex)
+			end
 		else
+			lumpInfoOld = self.lumpsDst[id]
 			self.lumpsDst[id] = lumpInfo
 		end
+		self:_closeOldLumpStream(lumpInfoOld)
+	end,
+	
+	revertLumpChanges = function(self, isGameLump, id)
+		-- Revert modifications done to a lump
+		local lumpInfoOld
+		if isGameLump then
+			local lumpInfoSrc
+			for i = 1, #self.gameLumpsSrc do
+				local lumpInfo = self.gameLumpsSrc[i]
+				if lumpInfo.id == id then
+					lumpInfoSrc = lumpInfo
+					break
+				end
+			end
+			local foundInDst = false
+			for i = 1, #self.gameLumpsDst do
+				local lumpInfo = self.gameLumpsDst[i]
+				if lumpInfo.id == id then
+					foundInDst = true
+					lumpInfoOld = lumpInfo
+					if lumpInfoSrc then
+						self.gameLumpsDst[i] = lumpInfoSrc
+					else
+						table.remove(self.gameLumpsDst, i)
+					end
+					break
+				end
+			end
+			if not foundInDst and lumpInfoSrc then
+				self.gameLumpsDst[#self.gameLumpsDst + 1] = lumpInfoSrc
+			end
+		else
+			lumpInfoOld = self.lumpsDst[id]
+			self.lumpsDst[id] = self.lumpsSrc[id]
+			self.lumpIndexesToCompress[id] = nil
+		end
+		self:_closeOldLumpStream(lumpInfoOld)
 	end,
 	
 	clearLump = function(self, isGameLump, id)
 		local lumpInfo
 		if isGameLump then
-			lumpInfo = dgamelump_t:new(context, nil, false)
+			-- Game lumps must be removed instead of being replaced with a null lump.
+			lumpInfo = nil
 		else
-			lumpInfo = lump_t:new(context, nil, false)
+			lumpInfo = lump_t:new(self, nil, false)
 		end
-		self:_copyLumpFieldsFromSrc(isGameLump, id, lumpInfo)
+		if lumpInfo then
+			self:_copyLumpFieldsFromSrc(isGameLump, id, lumpInfo)
+		end
 		self:_setDstLump(isGameLump, id, lumpInfo)
 		return lumpInfo
+	end,
+	
+	setLumpCompressed = function(self, id, toCompress)
+		-- Set the desired state of compression for the given lump
+		-- This does not work on individual game lumps because game lump compression is common to all game lumps.
+		-- Note: if at least 1 game lump is seen compressed (even in the original map) then all game lumps will be compressed.
+		self.lumpIndexesToCompress[id] = toCompress
 	end,
 	
 	_setupLumpFromHeaderlessStream = function(self, isGameLump, id, streamSrc)
 		-- Make a lump_t or a dgamelump_t for the specified headerless stream
 		-- The stream responsibility is given to the context, so it must be open for that occasion.
-		-- TODO - ajout pour fermer flux
-		-- TODO - autoriser importation compressée ??
 		
 		local lumpInfo
 		local lumpInfoSrc = self:_getLump(isGameLump, id, false)
@@ -1324,6 +1607,7 @@ BspContext = {
 			lumpInfo = lump_t:newFromPayloadStream(self, streamSrc, 0, streamSrc:Size(), lumpInfoSrc)
 		end
 		self:_copyLumpFieldsFromSrc(isGameLump, id, lumpInfo)
+		self:_setDstLump(isGameLump, id, lumpInfo)
 		return lumpInfo
 	end,
 	
@@ -1339,6 +1623,7 @@ BspContext = {
 	
 	setupLumpFromLumpFile = function(self, isGameLump, id, filePath)
 		-- TODO
+		-- TODO - détection du boutisme et erreur si différent
 		error("Not implemented yet")
 	end,
 	
@@ -1356,6 +1641,12 @@ BspContext = {
 		else
 			if idText == "LUMP_ENTITIES" then
 				payloadString = string.gsub(text, "\r\n", "\n") .. "\0" -- may take some time
+			elseif idText == "LUMP_TEXDATA_STRING_DATA" then
+				-- TODO
+				error('Not supported yet: Lump "LUMP_TEXDATA_STRING_DATA"')
+			elseif idText == "LUMP_OVERLAYS" then
+				-- TODO
+				error('Not supported yet: Lump "LUMP_OVERLAYS"')
 			else
 				error('Unsupported conversion from text to Lump "' .. tostring(idText or id) .. '"')
 			end
@@ -1377,50 +1668,486 @@ BspContext = {
 		local payload = lumpInfo.payload
 		if payload ~= nil then
 			local streamDst = file.Open(filePath, "wb", "DATA")
-			payload:copyTo(streamDst, withCompression, nil, nil, nil, true)
+			callSafe(payload.copyTo, payload, streamDst, withCompression, nil, nil, nil, true)
 			streamDst:Close()
 		else
 			error("The specified lump is a null lump!")
 		end
 	end,
 	
-	extractLumpAsTextFile = function(self, isGameLump, id, fromDst, filePath)
+	extractLumpAsText = function(self, isGameLump, id, fromDst)
 		local idText = getLumpNameFromLumpId(isGameLump, id)
 		local lumpInfo = self:_getLump(isGameLump, id, fromDst)
 		local payload = lumpInfo.payload
-		if payload ~= nil then
-			local text
-			if isGameLump then
-				if idText == "sprp" then
-					-- TODO
-					-- TODO - objet(s) supplémentaire(s) avec méta-informations
-					error('Not supported yet: Game Lump "sprp"')
-				else
-					error('Unsupported conversion to text from Game Lump "' .. tostring(idText or id) .. '"')
+		if payload == nil then
+			error("The specified lump is a null lump!")
+		end
+		local text
+		if isGameLump then
+			if idText == "sprp" then
+				-- TODO
+				-- TODO - objet(s) supplémentaire(s) avec méta-informations
+				error('Not supported yet: Game Lump "sprp"')
+			else
+				error('Unsupported conversion to text from Game Lump "' .. tostring(idText or id) .. '"')
+			end
+		else
+			if idText == "LUMP_ENTITIES" then
+				local _
+				_, _, text = string.find(payload:readAll(), "^([^%z]+)") -- closer to engine's behavior
+				--[[
+				if string.sub(payloadString, -1, -1) == "\0" then -- ends with a null byte
+					text = string.sub(payloadString, 1, -2) -- remove the ending null byte
+				end
+				]]
+			elseif idText == "LUMP_TEXDATA_STRING_DATA" then
+				-- TODO
+				error('Not supported yet: Lump "LUMP_TEXDATA_STRING_DATA"')
+			elseif idText == "LUMP_OVERLAYS" then
+				-- TODO - extraction textuelle avec traduction du matériau (pas id) et erreur si import erroné, format similaire à info_overlay
+				error('Not supported yet: Lump "LUMP_OVERLAYS"')
+			else
+				error('Unsupported conversion to text from Lump "' .. tostring(idText or id) .. '"')
+			end
+		end
+		return text
+	end,
+	
+	extractLumpAsTextFile = function(self, isGameLump, id, fromDst, filePath)
+		local text = self:extractLumpAsText(isGameLump, id, fromDst)
+		local streamDst = file.Open(filePath, "wb", "DATA")
+		callSafe(streamDst.Write, streamDst, text)
+		streamDst:Close()
+	end,
+	
+	moveEntitiesToLua = function(self)
+		-- Move the content of the LUMP_ENTITIES into a lua/autorun/server/ script
+		
+		local ipairs = ipairs
+		local string_find = string.find
+		local string_sub = string.sub
+		local util_KeyValuesToTablePreserveOrder = util.KeyValuesToTablePreserveOrder
+		local hook_Run = hook.Run
+		local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, true)
+		local mapInfo = self:getInfoMap()
+		local mapTitle = mapInfo.title
+		local entitiesText = {}
+		do
+			local posStart, posEnd, entityText = 1, nil, nil
+			repeat
+				posStart, posEnd, entityText = string_find(lumpContent, "^({\x0A.-\x0A}\x0A)", posStart)
+				entitiesText[#entitiesText + 1] = entityText
+				posStart = (posEnd or -1) + 1
+			until not posEnd
+		end
+		
+		-- local presentClassNames = {}
+		-- local presentClassNamesNoModel = {}
+		local classNamesInLua = {}
+		local classNamesInLump = {}
+		local entitiesTextKeptInLump = {}
+		local entitiesTextLua = {
+			[[-- Generated by Momo's Map Manipulation Tool]],
+			[[]],
+			[[local mapName = %mapName%]],
+			[[if string.lower( game.GetMap() ) == string.lower( mapName ) then]],
+			[[	local ents_Create = ents.Create]],
+			[[	local IsValid = IsValid]],
+			[[	local Entity = FindMetaTable( "Entity" )]],
+			[[	local ent_SetKeyValue = Entity.SetKeyValue]],
+			[[	local ent_Spawn = Entity.Spawn]],
+			[[	local ent_Activate = Entity.Activate]],
+			[[	]],
+			[[	local entitiesByMap = {}]],
+			[[	do]],
+			[[		local old_CreatedByMap = Entity.CreatedByMap]],
+			[[		function Entity:CreatedByMap( ... )]],
+			[[			return entitiesByMap[self] or old_CreatedByMap( self, ... )]],
+			[[		end]],
+			[[	end]],
+			[[	local entityToHammerid = {}]],
+			[[	do]],
+			[[		local old_MapCreationID = Entity.MapCreationID]],
+			[[		function Entity:MapCreationID( ... )]],
+			[[			return entityToHammerid[self] or old_MapCreationID( self, ... )]],
+			[[		end]],
+			[[	end]],
+			[[	local hammeridToEntity = {}]],
+			[[	do]],
+			[[		local old_GetMapCreatedEntity = ents.GetMapCreatedEntity]],
+			[[		local old_GetMapCreatedEntity = ents.GetMapCreatedEntity]],
+			[[		function ents.GetMapCreatedEntity( id, ... )]],
+			[[			local ent = hammeridToEntity[id] ]],
+			[[			if IsValid( ent ) then]],
+			[[				return ent]],
+			[[			else]],
+			[[				return old_GetMapCreatedEntity( id, ... )]],
+			[[			end]],
+			[[		end]],
+			[[	end]],
+			[[	]],
+			[[	local WEAK_KEYS = {__mode = "k"}]],
+			[[	local WEAK_VALUES = {__mode = "v"}]],
+			[[	]],
+			[[	local function InitPostEntity()]],
+			[[		local entities = {}]], -- because there's a limit of 200 local variables
+			[[		local ent]],
+			[[		entitiesByMap = setmetatable( {}, WEAK_KEYS )]],
+			[[		entityToHammerid = setmetatable( {}, WEAK_KEYS )]],
+			[[		hammeridToEntity = setmetatable( {}, WEAK_VALUES )]],
+		}
+		local entitiesTextLuaSpawn = {} -- after creating everything (all entities ready)
+		for i, entityText in ipairs(entitiesText) do
+			-- Determine the entity class:
+			local classname
+			local model = nil
+			-- There is a mandatory non-empty structure name, using the same identifer as in the Lua file.
+			local entityKeyValues = util_KeyValuesToTablePreserveOrder('"entities[' .. i .. ']"\x0A' .. entityText, false, true)
+			if entityKeyValues and #entityKeyValues ~= 0 then
+				for j = #entityKeyValues, 1, -1 do
+					local keyValue = entityKeyValues[j]
+					if keyValue.Key == "classname" then
+						classname = keyValue.Value
+						table.remove(entityKeyValues, j)
+					elseif keyValue.Key == "model" then
+						model = keyValue.Value
+					end
 				end
 			else
-				if idText == "LUMP_ENTITIES" then
-					local payloadString = payload:readAll()
-					text = payloadString
-					if string.sub(payloadString, -1, -1) == "\0" then -- ends with a null byte
-						text = string.sub(payloadString, 1, -2) -- remove the ending null byte
-					end
-				else
-					error('Unsupported conversion to text from Lump "' .. tostring(idText or id) .. '"')
+				print("Could not decode the following entity description:")
+				print(entityText)
+			end
+			--[[
+			if classname then
+				presentClassNames[classname] = true
+				if model == nil then
+					presentClassNamesNoModel[classname] = true
 				end
 			end
-			local streamDst = file.Open(filePath, "wb", "DATA")
-			streamDst:Write(text)
-			streamDst:Close()
-		else
-			error("The specified lump is a null lump!")
+			]]
+			
+			-- Select the appropriate target:
+			local moveToLua
+			if classname == nil then
+				moveToLua = false
+			elseif entityClassesAvoidLua[classname] then
+				moveToLua = false
+			elseif entityClassesForceLua[classname] then
+				moveToLua = true
+			elseif string_sub(classname, 1, 5) == "item_" then
+				moveToLua = true
+			elseif string_sub(classname, 1, 4) == "npc_" then
+				moveToLua = true
+			elseif string_sub(classname, 1, 7) == "weapon_" then
+				moveToLua = true
+			elseif not model or #model == 0 or string_sub(model, 1, 1) == "*" then
+				moveToLua = false
+			else
+				moveToLua = true
+			end
+			do
+				local moveToLua_ = hook_Run(
+					"map_manipulation_tool:moveEntitiesToLua:moveToLua",
+					mapTitle,
+					classname,
+					model,
+					moveToLua,
+					entityKeyValues
+				)
+				if moveToLua_ ~= nil then
+					moveToLua = moveToLua_
+				end
+			end
+			
+			if moveToLua then
+				classNamesInLua[classname] = true
+			else
+				classNamesInLump[classname] = true
+			end
+			
+			-- Insert the entity in the appropriate target:
+			if moveToLua then
+				entitiesTextLua[#entitiesTextLua + 1] = [[		]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[		ent = ents_Create( ]] .. stringToLuaString(classname) .. [[ )]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[		if IsValid( ent ) then]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[			entitiesByMap[ent] = true]]
+				for j = 1, #entityKeyValues do
+					local keyValue = entityKeyValues[j]
+					entitiesTextLua[#entitiesTextLua + 1] = [[			ent_SetKeyValue( ent, ]] .. stringToLuaString(keyValue.Key) .. [[, ]] .. stringToLuaString(keyValue.Value) .. [[ )]]
+					if keyValue.Key == "hammerid" then
+						local hammerid = keyValue.Value
+						entitiesTextLua[#entitiesTextLua + 1] = [[			entityToHammerid[ent] = ]] .. hammerid
+						entitiesTextLua[#entitiesTextLua + 1] = [[			hammeridToEntity[]] .. hammerid .. [[] = ent]]
+					end
+				end
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		if IsValid( entities[]] .. i .. [[] ) then]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Spawn( entities[]] .. i .. [[] )]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Activate( entities[]] .. i .. [[] )]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		end]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
+			else
+				entitiesTextKeptInLump[#entitiesTextKeptInLump + 1] = entityText
+			end
+		end
+		
+		-- Show present entity classes:
+		do
+			--[[
+			local presentClassNamesWithoutModel = {}
+			local presentClassNamesWithModel = {}
+			for classname in pairs(presentClassNames) do
+				if presentClassNamesNoModel[classname] then
+					presentClassNamesWithoutModel[#presentClassNamesWithoutModel + 1] = classname
+				else
+					presentClassNamesWithModel[#presentClassNamesWithModel + 1] = classname
+				end
+			end
+			presentClassNames = nil
+			table.sort(presentClassNamesWithoutModel)
+			print("Present class names without model:")
+			for i = 1, #presentClassNamesWithoutModel do
+				print("-", presentClassNamesWithoutModel[i])
+			end
+			table.sort(presentClassNamesWithModel)
+			print("Present class names with model:")
+			for i = 1, #presentClassNamesWithModel do
+				print("-", presentClassNamesWithModel[i])
+			end
+			]]
+			local classNamesInLua_ = {}
+			for classname in pairs(classNamesInLua) do
+				classNamesInLua_[#classNamesInLua_ + 1] = classname
+			end
+			table.sort(classNamesInLua_)
+			print("Present class names in Lua:")
+			for i = 1, #classNamesInLua_ do
+				print("-", classNamesInLua_[i])
+			end
+			
+			local classNamesInLump_ = {}
+			for classname in pairs(classNamesInLump) do
+				classNamesInLump_[#classNamesInLump_ + 1] = classname
+			end
+			table.sort(classNamesInLump_)
+			print("Present class names in LUMP_ENTITIES:")
+			for i = 1, #classNamesInLump_ do
+				print("-", classNamesInLump_[i])
+			end
+		end
+		
+		-- Append entitiesTextLuaSpawn to entitiesTextLua:
+		entitiesTextLua[#entitiesTextLua + 1] = [[		]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[		-- No loop so .mdmp shows Lua stack trace for specific problematic call!]]
+		for j = 1, #entitiesTextLuaSpawn do
+			entitiesTextLua[#entitiesTextLua + 1] = entitiesTextLuaSpawn[j]
+		end
+		
+		-- Finish the Lua file:
+		entitiesTextLua[#entitiesTextLua + 1] = [[	end]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[	local hookName = "map_manipulation_tool:" .. mapName]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[	hook.Add( "InitPostEntity", hookName, InitPostEntity )]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[	hook.Add( "PostCleanupMap", hookName, InitPostEntity )]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[end]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[]]
+		
+		self.entitiesTextLua = table.concat(entitiesTextLua, "\n")
+		self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, table.concat(entitiesTextKeptInLump))
+	end,
+	
+	_closeOldLumpStream = function(self, lumpInfoOld)
+		-- Close the input stream of the given lumpInfoOld
+		-- Must be called if a lump payload is going to be discarded
+		local streamSrc
+		if lumpInfoOld and lumpInfoOld.payload then
+			streamSrc = lumpInfoOld.payload.streamSrc
+			if streamSrc == self.streamSrc then
+				-- If the stream is the loaded map file, it is not to be closed.
+				streamSrc = nil
+			end
+		end
+		if streamSrc then
+			streamSrc:Close()
+		end
+	end,
+	
+	_closeAllLumpStreams = function(self)
+		-- Close the input stream of every lump payload
+		-- Must be called if every modified lump is going to be discarded
+		if self.lumpsDst ~= nil then
+			for i, lumpInfoOld in ipairs(self.lumpsDst) do
+				self:_closeOldLumpStream(lumpInfoOld)
+			end
+		end
+		if self.gameLumpsDst ~= nil then
+			for i, lumpInfoOld in ipairs(self.gameLumpsDst) do
+				self:_closeOldLumpStream(lumpInfoOld)
+			end
 		end
 	end,
 	
 	close = function(self)
-		-- TODO - close files in every external source [tablea : liste d'objets à fermer]
-		-- TODO - GC
+		-- This function must be called to properly close files.
+		
+		self:_closeAllLumpStreams()
 		self.streamSrc:Close()
+		
+		-- Full memory cleanup:
+		local keys = {}
+		for k in pairs(self) do
+			keys[#keys + 1] = k
+		end
+		for i = 1, #keys do
+			self[keys[i]] = nil
+		end
+		collectgarbage()
+	end,
+	
+	getInfoMap = function(self)
+		local _, _, title = string.find(self.filenameSrc, "([^\\/]+)$")
+		if title then
+			if string.lower(string.sub(title, -4, -1)) == ".dat" then
+				title = string.lower(string.sub(title, 1, -5))
+			end
+		end
+		if title then
+			if string.lower(string.sub(title, -4, -1)) == ".bsp" then
+				title = string.lower(string.sub(title, 1, -5))
+			end
+		end
+		return {
+			size = self.streamSrc:Size(),
+			version = self.bspHeader.version,
+			mapRevision = self.bspHeader.mapRevision,
+			bigEndian = (self.data_to_integer == data_to_be),
+			title = title,
+		}
+	end,
+	
+	_addLumpInfoToList = function(self, lumpInfoSrc, lumpInfoDst, isGameLump, id, toCompress, allLumps)
+		-- id: index in lumpsSrc & lumpsDst, unused for game lumps
+		
+		local sizeBefore = (lumpInfoSrc and lumpInfoSrc.filelen or -1)
+		local modified = false
+		if not isGameLump and id == lumpNameToLuaIndex.LUMP_GAME_LUMP then
+			for i = 1, math.max(#self.gameLumpsSrc, #self.gameLumpsDst) do
+				if self.gameLumpsSrc[i] ~= self.gameLumpsDst[i] then
+					modified = true
+					break
+				end
+			end
+		else
+			modified = (lumpInfoDst ~= lumpInfoSrc)
+		end
+		local sizeAfter = (lumpInfoDst and lumpInfoDst.filelen or -1) -- probably wrong if compression is to do
+		local gameLumpId
+		if isGameLump then
+			gameLumpId = (lumpInfoSrc and lumpInfoSrc.id or lumpInfoDst and lumpInfoDst.id or -1)
+		end
+		local compressedAfter = false
+		if isGameLump or id == lumpNameToLuaIndex.LUMP_GAME_LUMP then
+			-- Because I decided it is common to all game lumps:
+			local lumpGameLumpToCompress = self.lumpIndexesToCompress[lumpNameToLuaIndex.LUMP_GAME_LUMP]
+			if lumpGameLumpToCompress == nil then
+				compressedAfter = self:anyCompressedInGameLumps(self.gameLumpsDst)
+			else
+				compressedAfter = lumpGameLumpToCompress
+			end
+		else
+			if toCompress == nil then
+				if lumpInfoSrc and lumpInfoSrc.payload then
+					compressedAfter = lumpInfoSrc.payload.compressed or false
+				end
+			elseif toCompress then
+				compressedAfter = true
+			end
+		end
+		
+		local info = {
+			isGameLump = isGameLump,
+			luaId = isGameLump and gameLumpId or id,
+			id = isGameLump and (-1) or (id - 1),
+			name = isGameLump and int32_to_be_data(gameLumpId) or lumpLuaIndexToName[id],
+			version = lumpInfoSrc and lumpInfoSrc.version or lumpInfoDst and lumpInfoDst.version or -1,
+			sizeBefore = sizeBefore,
+			compressedBefore = lumpInfoSrc and lumpInfoSrc.payload and lumpInfoSrc.payload.compressed or false,
+			absent = ((sizeBefore == -1 or sizeBefore == 0) and (sizeAfter == -1 or sizeAfter == 0)),
+			modified = modified,
+			deleted = (modified and sizeAfter <= 0),
+			sizeAfter = sizeAfter,
+			compressedAfter = compressedAfter,
+		}
+		if allLumps ~= nil then
+			allLumps[#allLumps + 1] = info
+		end
+		
+		return info
+	end,
+	
+	getInfoLumps = function(self, includeAbsent, only1, only1IsGameLump, only1Id)
+		-- Returns readable information about all lumps (for UI)
+		-- includeAbsent: also include lumps that are not present in the map
+		-- only1: only return allLumps with 1 value, matching only1IsGameLump, only1Id
+		
+		local allLumps = {}
+		
+		local LUMP_ID_GAME_LUMP = lumpNameToLuaIndex["LUMP_GAME_LUMP"]
+		if only1 then
+			includeAbsent = true
+		end
+		for i = 1, #self.lumpsSrc do
+			local toCompress = self.lumpIndexesToCompress[i]
+			
+			-- Add lumps:
+			if not only1 or (not only1IsGameLump and i == only1Id) then
+				local lumpSrc = self.lumpsSrc[i]
+				local lumpDst = self.lumpsDst[i]
+				if includeAbsent or (lumpSrc and lumpSrc.payload) or (lumpDst and lumpDst.payload) then
+					self:_addLumpInfoToList(self.lumpsSrc[i], self.lumpsDst[i], false, i, toCompress, allLumps)
+				end
+			end
+			
+			-- Add game lumps:
+			if i == LUMP_ID_GAME_LUMP then
+				local gameLumpIdsInSrc = {}
+				for j = 1, #self.gameLumpsSrc do
+					-- Locate the game lump with same id in self.gameLumpsDst:
+					local gameLumpSrc = self.gameLumpsSrc[j]
+					local gameLumpDst
+					local id = gameLumpSrc.id
+					if not only1 or (only1IsGameLump and id == only1Id) then
+						for k = 1, #self.gameLumpsDst do
+							if self.gameLumpsDst[k].id == id then
+								gameLumpDst = self.gameLumpsDst[k]
+								break
+							end
+						end
+						-- Add a game lump when present in self.gameLumpsSrc:
+						self:_addLumpInfoToList(gameLumpSrc, gameLumpDst, true, j, toCompress, allLumps)
+					end
+					gameLumpIdsInSrc[id] = true
+				end
+				for j = 1, #self.gameLumpsDst do
+					local gameLumpDst = self.gameLumpsDst[j]
+					local id = gameLumpDst.id
+					if not gameLumpIdsInSrc[id] then
+						if not only1 or (only1IsGameLump and id == only1Id) then
+							-- Add a game lump if no lump with same id in self.gameLumpsSrc:
+							self:_addLumpInfoToList(nil, gameLumpDst, true, j, toCompress, allLumps)
+						end
+					end
+				end
+			end
+		end
+		
+		return allLumps
+	end,
+	
+	getUpdatedInfoLump = function(self, oldInfo)
+		-- Returns a new info object for the given obsolete lump info object
+		-- This is useful to update just a given lump after a modification on the GUI.
+		return self:getInfoLumps(true, true, oldInfo.isGameLump, oldInfo.luaId)[1]
 	end,
 }
 BspContext.__index = BspContext
