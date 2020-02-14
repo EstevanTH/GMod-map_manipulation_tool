@@ -1768,29 +1768,31 @@ BspContext = {
 			[[	local ent_Activate = Entity.Activate]],
 			[[	]],
 			[[	local entitiesByMap = {}]],
+			[[	local inLumpCreatedByMap = Entity.CreatedByMap]],
 			[[	do]],
-			[[		local old_CreatedByMap = Entity.CreatedByMap]],
 			[[		function Entity:CreatedByMap( ... )]],
-			[[			return entitiesByMap[self] or old_CreatedByMap( self, ... )]],
+			[[			return entitiesByMap[self] or inLumpCreatedByMap( self, ... )]],
 			[[		end]],
 			[[	end]],
-			[[	local entityToHammerid = {}]],
+			[[	local entityToNewMapCreationId = {}]],
 			[[	do]],
 			[[		local old_MapCreationID = Entity.MapCreationID]],
 			[[		function Entity:MapCreationID( ... )]],
-			[[			return entityToHammerid[self] or old_MapCreationID( self, ... )]],
+			[[			return entityToNewMapCreationId[self] or old_MapCreationID( self, ... )]],
 			[[		end]],
 			[[	end]],
-			[[	local hammeridToEntity = {}]],
+			[[	local newMapCreationIdToEntity = {}]],
 			[[	local inLumpGetMapCreatedEntity = ents.GetMapCreatedEntity]],
 			[[	function ents.GetMapCreatedEntity( id, ... )]],
-			[[		local ent = hammeridToEntity[id] ]],
+			[[		local ent = newMapCreationIdToEntity[id] ]],
 			[[		if IsValid( ent ) then]],
 			[[			return ent]],
 			[[		else]],
 			[[			return inLumpGetMapCreatedEntity( id, ... )]],
 			[[		end]],
 			[[	end]],
+			[[	local entityToHammerid = {}]],
+			[[	local hammeridToEntity = {}]],
 			[[	]],
 			[[	local WEAK_KEYS = {__mode = "k"}]],
 			[[	local WEAK_VALUES = {__mode = "v"}]],
@@ -1801,8 +1803,27 @@ BspContext = {
 			[[		entitiesByMap = setmetatable( {}, WEAK_KEYS )]],
 			[[		entityToHammerid = setmetatable( {}, WEAK_KEYS )]],
 			[[		hammeridToEntity = setmetatable( {}, WEAK_VALUES )]],
+			[[		entityToNewMapCreationId = setmetatable( {}, WEAK_KEYS )]],
+			[[		newMapCreationIdToEntity = setmetatable( {}, WEAK_VALUES )]],
+			[[		]],
+					-- List all in-lump entities:
+			[[		do]],
+			[[			local inLumpEntities = ents.GetAll()]], -- may contain Lua-created entities (hook order)!
+			[[			for i = 1, #inLumpEntities do]], -- may contain Lua-created entities
+			[[				ent = inLumpEntities[i] ]],
+			[[				if inLumpCreatedByMap( ent ) then]],
+			[[					local hammerid = tonumber( ent:GetKeyValues()["hammerid"] )]],
+			[[					if hammerid and hammerid > 0 then]],
+			[[						entitiesByMap[ent] = true]],
+			[[						entityToHammerid[ent] = hammerid]],
+			[[						hammeridToEntity[hammerid] = ent]],
+			[[					end]],
+			[[				end]],
+			[[			end]],
+			[[		end]],
 		}
 		local entitiesTextLuaSpawn = {} -- after creating everything (all entities ready)
+		local newMapCreationId = 32768 -- safest choice: 1 + max of signed 16-bit
 		for i = 1, #entitiesText do
 			local entityText = entitiesText[i]
 			
@@ -1820,7 +1841,7 @@ BspContext = {
 					if key == "classname" then
 						classname = value
 					elseif key == "hammerid" then
-						hammerid = value
+						hammerid = tonumber(value) -- security
 					elseif key == "model" then
 						model = value
 					elseif key == "targetname" then
@@ -1887,13 +1908,16 @@ BspContext = {
 				classNamesInLump[classname] = true
 			end
 			
-			-- Insert the entity in the appropriate target:
+			-- Insert the entity into the appropriate target:
 			if moveToLua then
+				newMapCreationId = newMapCreationId - 1
 				entitiesTextLua[#entitiesTextLua + 1] = [[		]]
 				entitiesTextLua[#entitiesTextLua + 1] = [[		ent = ents_Create( ]] .. stringToLuaString(classname) .. [[ )]]
 				entitiesTextLua[#entitiesTextLua + 1] = [[		if IsValid( ent ) then]]
 				entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
 				entitiesTextLua[#entitiesTextLua + 1] = [[			entitiesByMap[ent] = true]]
+				entitiesTextLua[#entitiesTextLua + 1] = [[			entityToNewMapCreationId[ent] = ]] .. newMapCreationId
+				entitiesTextLua[#entitiesTextLua + 1] = [[			newMapCreationIdToEntity[]] .. newMapCreationId .. [[] = ent]]
 				for j = 1, #entityKeyValues do
 					local keyValue = entityKeyValues[j]
 					local key = keyValue.Key
@@ -1901,8 +1925,9 @@ BspContext = {
 						local value = keyValue.Value
 						entitiesTextLua[#entitiesTextLua + 1] = [[			ent_SetKeyValue( ent, ]] .. stringToLuaString(key) .. [[, ]] .. stringToLuaString(value) .. [[ )]]
 						if key == "hammerid" then
-							entitiesTextLua[#entitiesTextLua + 1] = [[			entityToHammerid[ent] = ]] .. value
-							entitiesTextLua[#entitiesTextLua + 1] = [[			hammeridToEntity[]] .. value .. [[] = ent]]
+							-- Using the hammerid variable because it is a number.
+							entitiesTextLua[#entitiesTextLua + 1] = [[			entityToHammerid[ent] = ]] .. hammerid
+							entitiesTextLua[#entitiesTextLua + 1] = [[			hammeridToEntity[]] .. hammerid .. [[] = ent]]
 						end
 					end
 				end
@@ -1916,7 +1941,7 @@ BspContext = {
 				entitiesTextKeptInLump[#entitiesTextKeptInLump + 1] = entityText
 				if hammerid ~= nil then
 					entitiesTextLua[#entitiesTextLua + 1] = [[		]]
-					entitiesTextLua[#entitiesTextLua + 1] = [[		ent = inLumpGetMapCreatedEntity( ]] .. hammerid .. [[ )]]
+					entitiesTextLua[#entitiesTextLua + 1] = [[		ent = hammeridToEntity[]] .. hammerid .. [[] ]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		if IsValid( ent ) then]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
@@ -1971,6 +1996,7 @@ BspContext = {
 		
 		-- Append entity hierarchy to entitiesTextLua:
 		for i = 1, #entitiesText do
+			-- This also includes in-lump entities that could have their parent already set, but it does not hurt to set it again.
 			local parentname = entityIndexesToParentname[i]
 			if parentname and #parentname ~= 0 then -- has declared parent
 				local parentsIndexes = targetnamesToEntityIndexes[parentname]
