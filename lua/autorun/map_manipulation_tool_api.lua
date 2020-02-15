@@ -1891,6 +1891,7 @@ BspContext = {
 			-- Determine basic entity information:
 			local classname
 			local hammerid
+			local targetname
 			local model = nil
 			-- There is a mandatory non-empty structure name, using the same identifer as in the Lua file.
 			local entityKeyValues = util_KeyValuesToTablePreserveOrder('"entities[' .. i .. ']"\x0A' .. entityText, false, true)
@@ -1906,10 +1907,11 @@ BspContext = {
 					elseif key == "model" then
 						model = value
 					elseif key == "targetname" then
-						local entityIndexes = targetnamesToEntityIndexes[value]
+						targetname = value
+						local entityIndexes = targetnamesToEntityIndexes[targetname]
 						if not entityIndexes then
 							entityIndexes = {}
-							targetnamesToEntityIndexes[value] = entityIndexes
+							targetnamesToEntityIndexes[targetname] = entityIndexes
 						end
 						entityIndexes[#entityIndexes + 1] = i
 					elseif key == "parentname" then
@@ -1956,7 +1958,8 @@ BspContext = {
 					classname,
 					model,
 					moveToLua,
-					entityKeyValues
+					entityKeyValues,
+					targetname
 				)
 				if moveToLua_ ~= nil then
 					moveToLua = moveToLua_
