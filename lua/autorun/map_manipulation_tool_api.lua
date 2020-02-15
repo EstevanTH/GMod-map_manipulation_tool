@@ -36,6 +36,8 @@ module("map_manipulation_tool_api", package.seeall)
 --- Constants ---
 BUFFER_LENGTH = 4194304 -- 4 MiB
 FULL_ZERO_BUFFER = nil -- BUFFER_LENGTH of null data, set only on 1st API use
+local WEAK_KEYS = {__mode = "k"}
+local WEAK_VALUES = {__mode = "v"}
 
 
 --- Utility ---
@@ -222,10 +224,51 @@ do
 				return
 			end
 		end,
-		
 	}
 	BytesIO.__index = BytesIO
 	setmetatable(BytesIO, FindMetaTable("File"))
+end
+
+do
+	local File = FindMetaTable("File")
+	local _sizes = setmetatable({}, WEAK_KEYS) -- not using a member because instance is a userdata
+	
+	FileForWrite = {
+		-- Replacement for the File class that keeps trace of the actual current file size
+		-- It is useless if the file is open in read mode.
+		
+		new = function(cls, ...)
+			local instance = file.Open(...)
+			if instance then
+				_sizes[instance] = instance:Size()
+				debug.setmetatable(instance, cls)
+			end
+			return instance
+		end,
+		
+		Size = function(self)
+			return _sizes[self]
+		end,
+	}
+	do
+		local File_Tell = File.Tell
+		local function updateSize(stream)
+			local pos = File_Tell(stream)
+			if pos > _sizes[stream] then
+				_sizes[stream] = pos
+			end
+		end
+		for methodName, parentMethod in pairs(File) do
+			if isstring(methodName) and string.sub(methodName, 1, 5) == "Write" and isfunction(parentMethod) then
+				FileForWrite[methodName] = function(self, ...)
+					parentMethod(self, ...)
+					updateSize(self)
+				end
+			end
+		end
+	end
+	FileForWrite.__index = FileForWrite
+	setmetatable(FileForWrite, File)
 end
 
 do
@@ -681,6 +724,7 @@ local LumpPayload = BaseDataStructure:newClass({
 	
 	_addOffsetMultiple4 = function(cls, streamDst) -- static method
 		-- Add dummy bytes to meet the "4-byte multiple" lump start position requirement
+		-- Of course this does nothing if streamDst is a headerless file (cursor is 0).
 		local dummyBytes = streamDst:Tell() % 4
 		if dummyBytes ~= 0 then
 			streamDst:Write(string.rep("\0", dummyBytes))
@@ -689,29 +733,43 @@ local LumpPayload = BaseDataStructure:newClass({
 	
 	_writeAutoOffset4AndJumpEnd = function(self, streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, totalLength)
 		-- 1- Seek to the end of the destination file if payloadRoom is insufficient
-		-- 2- Skip bytes to set the offset to a multiple of 4
-		-- payloadRoom: max length in bytes or nil
+		-- 2- If moved, erase the previous payload (security & compression improvement)
+		-- 3- If moved, skip bytes to set the offset to a multiple of 4
+		-- payloadRoom: max length in bytes or nil (only applies for .bsp file outputs)
+		-- noMoveToEnd: forbid moving to the end if room is insufficient
+		-- noFillWithZeroes: avoid returning fillRoomWithZeroes = true when payload shorter than payloadRoom
+		-- totalLength: number of bytes to write
 		-- return 1: false if noMoveToEnd constraint failed
 		-- return 2: true if filling with zeroes
 		local okayConstraint = true
-		local fillWithZeroes = false
+		local fillRoomWithZeroes = false
 		if payloadRoom == nil then
 			-- unconstrained room (writing in an LUMP_GAME_LUMP at the end of the file or in a separate lump file)
+			-- This condition can be thought about again if necessary.
+			-- TODO - inspecter lors de l'exportation d'un fichier .lmp
 			self:_addOffsetMultiple4(streamDst)
 		elseif payloadRoom <= 0 or payloadRoom < totalLength then
 			-- lump not present in source map OR lump too big OR no space left (game lump)
 			-- Note: 0 is rare but possible when no space left for another game lump.
 			if noMoveToEnd then
 				okayConstraint = false
+				print("\t\tNot enough room to proceed!")
 			else
+				print("\t\tNot enough room, erasing & moving to the end...")
+				if noFillWithZeroes then
+					print("\t\tSkipping erasing!") -- no reason to trigger this case
+				else
+					self:_fillWithZeroes(streamDst, payloadRoom) -- erasing old payload
+				end
 				streamDst:Seek(streamDst:Size()) -- to EOF
 				self:_addOffsetMultiple4(streamDst)
-				if not noFillWithZeroes then
-					fillWithZeroes = true
-				end
+			end
+		elseif payloadRoom > 0 then
+			if not noFillWithZeroes then
+				fillRoomWithZeroes = true
 			end
 		end
-		return okayConstraint, fillWithZeroes
+		return okayConstraint, fillRoomWithZeroes
 	end,
 	
 	_fillWithZeroes = function(cls, streamDst, length) -- static method
@@ -731,10 +789,11 @@ local LumpPayload = BaseDataStructure:newClass({
 		-- Copy the current lump from self.streamSrc to streamDst
 		-- payloadRoom: room for the payload (filelen in the source map) otherwise moved to end, or nil
 		-- noMoveToEnd: for game lumps, which should not be out of the LUMP_GAME_LUMP
-		-- noFillWithZeroes: for game lumps, do not fill with 0's to fill payloadRoom
+		-- noFillWithZeroes: for game lumps & separate files, do not fill with 0's to fill payloadRoom
+		-- standardLzmaHeader: write a standard LZMA header instead of a VBSP LZMA header
 		-- return: a new lump_t or derived / false if noMoveToEnd constraint failed
 		
-		local okayConstraint, fillWithZeroes
+		local okayConstraint, fillRoomWithZeroes
 		if withCompression == nil then
 			withCompression = self.compressed
 		end
@@ -743,18 +802,18 @@ local LumpPayload = BaseDataStructure:newClass({
 			-- Just copy:
 			local filelen = self.lumpInfoSrc.filelen
 			local remainingBytes = filelen
-			okayConstraint, fillWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, remainingBytes)
+			okayConstraint, fillRoomWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, remainingBytes)
 			if not okayConstraint then
 				return false
 			end
 			local fileofs = streamDst:Tell()
-			self.streamSrc:Seek(self.offset)
+			self:seekToPayload()
 			while remainingBytes > 0 do
 				local toRead_bytes = math.min(BUFFER_LENGTH, remainingBytes)
 				streamDst:Write(self.streamSrc:Read(toRead_bytes))
 				remainingBytes = remainingBytes - toRead_bytes
 			end
-			if fillWithZeroes then
+			if fillRoomWithZeroes then
 				self:_fillWithZeroes(streamDst, payloadRoom - filelen)
 			end
 			self.lumpInfoDst = self.lumpInfoType:new(self.context, nil, self, nil, fileofs, filelen)
@@ -771,7 +830,9 @@ local LumpPayload = BaseDataStructure:newClass({
 		-- Write the given lump payload (which must be for self) into streamDst
 		-- payload: uncompressed lump content
 		-- payloadRoom: room for the payload (filelen in the source map) otherwise moved to end, or nil
+		-- standardLzmaHeader: write a standard LZMA header instead of a VBSP LZMA header
 		-- return: a new lump_t or derived / false if noMoveToEnd constraint failed
+		
 		local payload
 		local fileofs = streamDst:Tell()
 		local uncompressedBytes
@@ -779,7 +840,7 @@ local LumpPayload = BaseDataStructure:newClass({
 		local remainingBytes
 		local finalPayload
 		local filelen
-		local okayConstraint, fillWithZeroes
+		local okayConstraint, fillRoomWithZeroes
 		if withCompression then
 			local payloadCompressed
 			local compressedBytes
@@ -802,7 +863,7 @@ local LumpPayload = BaseDataStructure:newClass({
 			end
 			compressedBytes = #payloadCompressed
 			filelen = compressedBytes
-			okayConstraint, fillWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
+			okayConstraint, fillRoomWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
 			if not okayConstraint then
 				return false
 			end
@@ -812,7 +873,7 @@ local LumpPayload = BaseDataStructure:newClass({
 			payload = self:readAll()
 			uncompressedBytes = #payload
 			filelen = uncompressedBytes
-			okayConstraint, fillWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
+			okayConstraint, fillRoomWithZeroes = self:_writeAutoOffset4AndJumpEnd(streamDst, payloadRoom, noMoveToEnd, noFillWithZeroes, filelen)
 			if not okayConstraint then
 				return false
 			end
@@ -826,7 +887,7 @@ local LumpPayload = BaseDataStructure:newClass({
 			remainingBytes = remainingBytes - bytesToWrite
 			cursorBytes = cursorBytes + bytesToWrite
 		end
-		if fillWithZeroes then
+		if fillRoomWithZeroes then
 			self:_fillWithZeroes(streamDst, payloadRoom - filelen)
 		end
 		self.lumpInfoDst = self.lumpInfoType:new(self.context, nil, self, nil, fileofs, filelen)
@@ -845,7 +906,8 @@ local LumpPayload = BaseDataStructure:newClass({
 	
 	erasePrevious = function(cls, context, streamDst, lumpInfo) -- static method
 		-- Erase a lump payload with null-bytes to save space
-		-- TODO - mark this space as available for added lumps
+		-- Note: this method is not used in code where lumpInfo is unavailable
+		-- TODO - mark this space as available for added lumps + where lumpInfo is unavailable
 		
 		local remainingBytes = lumpInfo.filelen
 		if remainingBytes > 0 and lumpInfo.fileofs > 0 then
@@ -1294,7 +1356,7 @@ BspContext = {
 			end
 		end
 		
-		-- At this point, lumpsDst & gameLumpsDst contains lumps from self.streamSrc or external sources, with a possibly wrong fileofs.
+		-- At this point, lumpsDst & gameLumpsDst contain lumps from self.streamSrc or external sources, with a possibly wrong fileofs.
 		local LUMP_GAME_LUMP = lumpNameToLuaIndex.LUMP_GAME_LUMP
 		local LUMP_PAKFILE = lumpNameToLuaIndex.LUMP_PAKFILE
 		local LUMP_XZIPPAKFILE = lumpNameToLuaIndex.LUMP_XZIPPAKFILE
@@ -1385,7 +1447,7 @@ BspContext = {
 									if not payload:copyTo(streamDst, withCompression, payloadRoom, true, true) then
 										jumpNoFit = true
 										-- Warning: compressing or decompressing game lumps will be done again.
-										print("Not enough room in the original LUMP_GAME_LUMP!")
+										print("\t\tNot enough room in the original LUMP_GAME_LUMP!")
 										break
 									end
 								else
@@ -1425,9 +1487,8 @@ BspContext = {
 					local payload = lumpsDst[i].payload
 					if payload ~= nil then
 						-- The lump to copy from has a payload.
-						streamDst:Seek(self.lumpsSrc[i].fileofs) -- 0 if initially absent, written ok at the end
-						payload:copyTo(streamDst, withCompression, self.lumpsSrc[i].filelen)
-						lumpsDst[i] = payload.lumpInfoDst
+						streamDst:Seek(self.lumpsSrc[i].fileofs) -- 0 if initially absent: written ok at the end
+						lumpsDst[i] = payload:copyTo(streamDst, withCompression, self.lumpsSrc[i].filelen)
 					else
 						-- The lump to copy is a null payload.
 						if self.lumpsSrc[i].payload ~= nil then
@@ -1454,7 +1515,7 @@ BspContext = {
 				entitiesTextLua = string.gsub(entitiesTextLua, "%%mapName%%", stringToLuaString(mapName), 1)
 			end
 			local filenameDst = string.gsub(mapFilenameDst, "%.bsp%.dat$", "", 1) .. ".lua.txt"
-			local streamDst = file.Open(filenameDst, "w", "DATA")
+			local streamDst = FileForWrite:new(filenameDst, "w", "DATA")
 			if streamDst then
 				callSafe(streamDst.Write, streamDst, entitiesTextLua)
 				streamDst:Close()
@@ -1467,7 +1528,7 @@ BspContext = {
 	writeNewBsp = function(self, filenameDst)
 		-- Note: compression / decompression is not applied if a lump is unchanged.
 		
-		local streamDst = file.Open(filenameDst, "wb", "DATA")
+		local streamDst = FileForWrite:new(filenameDst, "wb", "DATA")
 		if streamDst == nil then
 			error("Unable to open data/" .. filenameDst .. " for write")
 		end
@@ -1672,7 +1733,7 @@ BspContext = {
 		local lumpInfo = self:_getLump(isGameLump, id, fromDst)
 		local payload = lumpInfo.payload
 		if payload ~= nil then
-			local streamDst = file.Open(filePath, "wb", "DATA")
+			local streamDst = FileForWrite:new(filePath, "wb", "DATA")
 			callSafe(payload.copyTo, payload, streamDst, withCompression, nil, nil, nil, true)
 			streamDst:Close()
 		else
@@ -1720,7 +1781,7 @@ BspContext = {
 	
 	extractLumpAsTextFile = function(self, isGameLump, id, fromDst, filePath)
 		local text = self:extractLumpAsText(isGameLump, id, fromDst)
-		local streamDst = file.Open(filePath, "wb", "DATA")
+		local streamDst = FileForWrite:new(filePath, "wb", "DATA")
 		callSafe(streamDst.Write, streamDst, text)
 		streamDst:Close()
 	end,
