@@ -566,6 +566,17 @@ local entityKeyValuesNotInLua = {
 	["parentname"] = true,
 }
 
+local entityClassesForceRespawn = {
+	-- Entity classes that should be respawned because they may depend on missing entities during their initial spawn:
+	-- In addition, class names starting with filter_ / func_ / logic_ are forced too.
+	["func_areaportalwindow"] = true,
+	["point_template"] = true,
+}
+
+local entityClassesAvoidRespawn = {
+	-- Entity classes that should not be moved into Lua besides having a prefix mentioned above:
+}
+
 
 --- Data structures ---
 
@@ -2068,6 +2079,7 @@ BspContext = {
 			end
 			
 			-- Insert the entity into the appropriate target:
+			local respawned = false
 			if moveToLua then
 				newMapCreationId = newMapCreationId - 1
 				entitiesTextLua[#entitiesTextLua + 1] = [[		]]
@@ -2091,20 +2103,53 @@ BspContext = {
 					end
 				end
 				entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
-				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		]]
-				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		if entities[]] .. i .. [[] then]]
-				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Spawn( entities[]] .. i .. [[] )]]
-				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Activate( entities[]] .. i .. [[] )]]
-				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		end]]
+				respawned = true
 			else
 				entitiesTextKeptInLump[#entitiesTextKeptInLump + 1] = entityText
-				if hammerid ~= nil then
+				if hammerid ~= nil then -- only way to uniquely identify a map-created entity
 					entitiesTextLua[#entitiesTextLua + 1] = [[		]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		ent = hammeridToEntity[]] .. hammerid .. [[] ]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		if IsValid( ent ) then]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
+					if classname == nil then
+						respawned = false
+					elseif entityClassesAvoidRespawn[classname] then
+						respawned = false
+					elseif entityClassesForceRespawn[classname] then
+						respawned = true
+					elseif string_sub(classname, 1, 7) == "filter_" then
+						respawned = true
+					elseif string_sub(classname, 1, 5) == "func_" then
+						respawned = true
+					elseif string_sub(classname, 1, 6) == "logic_" then
+						respawned = true
+					else
+						respawned = false
+					end
+					do
+						local respawned_ = hook_Run(
+							"map_manipulation_tool:moveEntitiesToLua:respawned",
+							mapTitle,
+							classname,
+							targetname,
+							respawned,
+							entityKeyValues
+						)
+						if respawned_ ~= nil then
+							respawned = respawned_
+						end
+					end
 				end
+			end
+			
+			-- Insert entities to Spawn():
+			if respawned then
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		if entities[]] .. i .. [[] then]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Spawn( entities[]] .. i .. [[] )]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[			ent_Activate( entities[]] .. i .. [[] )]]
+				entitiesTextLuaSpawn[#entitiesTextLuaSpawn + 1] = [[		end]]
 			end
 		end
 		
