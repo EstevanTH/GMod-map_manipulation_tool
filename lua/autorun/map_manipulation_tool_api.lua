@@ -98,6 +98,25 @@ function int16_to_be_data(num)
 	return string.char(unpack(bytes))
 end
 
+local writeZeroesInFile
+do
+	local math_min = math.min
+	local string_rep = string.rep
+	function writeZeroesInFile(streamDst, remainingBytes)
+		-- Write remainingBytes NULL bytes in streamDst
+		
+		while remainingBytes > 0 do
+			local toWrite_bytes = math_min(BUFFER_LENGTH, remainingBytes)
+			local buffer = FULL_ZERO_BUFFER
+			if toWrite_bytes ~= BUFFER_LENGTH then
+				buffer = string_rep("\0", toWrite_bytes) -- expensive!
+			end
+			streamDst:Write(buffer)
+			remainingBytes = remainingBytes - toWrite_bytes
+		end
+	end
+end
+
 do
 	local math_min = math.min
 	local math_max = math.max
@@ -231,7 +250,11 @@ end
 
 do
 	local File = FindMetaTable("File")
-	local _sizes = setmetatable({}, WEAK_KEYS) -- not using a member because instance is a userdata
+	local File_Tell = File.Tell
+	local File_Seek = File.Seek
+	-- Not using members because instance is a userdata:
+	local _sizes = setmetatable({}, WEAK_KEYS)
+	local _sizesUntruncated = setmetatable({}, WEAK_KEYS)
 	
 	FileForWrite = {
 		-- Replacement for the File class that keeps trace of the actual current file size
@@ -240,7 +263,9 @@ do
 		new = function(cls, ...)
 			local instance = file.Open(...)
 			if instance then
-				_sizes[instance] = instance:Size()
+				local rawSize = instance:Size()
+				_sizes[instance] = rawSize
+				_sizesUntruncated[instance] = rawSize
 				debug.setmetatable(instance, cls)
 			end
 			return instance
@@ -249,13 +274,34 @@ do
 		Size = function(self)
 			return _sizes[self]
 		end,
+		
+		sizeUntruncated = function(self)
+			return _sizesUntruncated[self]
+		end,
+		
+		truncate = function(self)
+			-- Erase the rest of the file with NULL-bytes and update the fake size
+			-- Already truncated space is not erased again.
+			-- This method does not come standard.
+			local pos = File_Tell(self)
+			local lengthOfZeroes = _sizes[self] - pos
+			if lengthOfZeroes >= 0 then
+				writeZeroesInFile(self, lengthOfZeroes)
+				File_Seek(self, pos)
+				_sizes[self] = pos
+			else
+				print("Attempted to FileForWrite:truncate() with FileForWrite:Size() < File:Tell()!")
+			end
+		end,
 	}
 	do
-		local File_Tell = File.Tell
 		local function updateSize(stream)
 			local pos = File_Tell(stream)
 			if pos > _sizes[stream] then
 				_sizes[stream] = pos
+			end
+			if pos > _sizesUntruncated[stream] then
+				_sizesUntruncated[stream] = pos
 			end
 		end
 		for methodName, parentMethod in pairs(File) do
@@ -671,6 +717,7 @@ local BaseDataStructure = {
 BaseDataStructure.__index = BaseDataStructure
 
 lump_t = false -- defined later
+dgamelump_t = false -- defined later
 
 local LumpPayload = BaseDataStructure:newClass({
 	-- Wrapper around a lump payload
@@ -723,7 +770,7 @@ local LumpPayload = BaseDataStructure:newClass({
 	end,
 	
 	_addOffsetMultiple4 = function(cls, streamDst) -- static method
-		-- Add dummy bytes to meet the "4-byte multiple" lump start position requirement
+		-- Add dummy bytes to meet the "4-byte multiple" lump start position specification
 		-- Of course this does nothing if streamDst is a headerless file (cursor is 0).
 		local dummyBytes = streamDst:Tell() % 4
 		if dummyBytes ~= 0 then
@@ -743,11 +790,20 @@ local LumpPayload = BaseDataStructure:newClass({
 		-- return 2: true if filling with zeroes
 		local okayConstraint = true
 		local fillRoomWithZeroes = false
+		-- local isGameLump = (self.lumpInfoType == dgamelump_t)
 		if payloadRoom == nil then
 			-- unconstrained room (writing in an LUMP_GAME_LUMP at the end of the file or in a separate lump file)
+			-- This applies in the following cases:
+			-- - Writing a game lump at the end of a .bsp file (lack of space)
+			-- - Writing a lump at the end of a .bsp file (lack of space or replacement of last lump payload or newly added)
+			-- - Exporting to an external file
 			-- This condition can be thought about again if necessary.
-			-- TODO - inspecter lors de l'exportation d'un fichier .lmp
-			self:_addOffsetMultiple4(streamDst)
+			do
+				-- This should not apply when replacing last lump payload in .bsp file, but wasting up to 3 bytes does not matter.
+				-- This does nothing when exporting to an external file (offset is always 0).
+				-- TODO - inspecter lors de l'exportation d'un fichier .lmp
+				self:_addOffsetMultiple4(streamDst)
+			end
 		elseif payloadRoom <= 0 or payloadRoom < totalLength then
 			-- lump not present in source map OR lump too big OR no space left (game lump)
 			-- Note: 0 is rare but possible when no space left for another game lump.
@@ -765,6 +821,7 @@ local LumpPayload = BaseDataStructure:newClass({
 				self:_addOffsetMultiple4(streamDst)
 			end
 		elseif payloadRoom > 0 then
+			-- lump present in source map with maybe some space left in payloadRoom
 			if not noFillWithZeroes then
 				fillRoomWithZeroes = true
 			end
@@ -912,21 +969,11 @@ local LumpPayload = BaseDataStructure:newClass({
 		local remainingBytes = lumpInfo.filelen
 		if remainingBytes > 0 and lumpInfo.fileofs > 0 then
 			streamDst:Seek(lumpInfo.fileofs)
-			while remainingBytes > 0 do
-				local toWrite_bytes = math.min(BUFFER_LENGTH, remainingBytes)
-				local buffer = FULL_ZERO_BUFFER
-				if toWrite_bytes ~= BUFFER_LENGTH then
-					buffer = string.rep("\0", toWrite_bytes) -- expensive!
-				end
-				streamDst:Write(buffer)
-				remainingBytes = remainingBytes - toWrite_bytes
-			end
+			writeZeroesInFile(streamDst, remainingBytes)
 		end
 	end,
 })
 LumpPayload.__index = LumpPayload
-
-dgamelump_t = false -- defined later
 
 local GameLumpPayload = LumpPayload:newClass({
 	-- Wrapper around a game lump payload
@@ -1209,9 +1256,11 @@ local dheader_t = BaseDataStructure:newClass({
 })
 dheader_t.__index = dheader_t
 
-local function lumpIndexesOrderedFromOffset(lumps)
-	-- Make a table of lump indexes ordered by their fileofs
+local function lumpIndexesOrderedDescFromOffset(lumps)
+	-- Make a table of lump indexes ordered (descending) by their fileofs
+	-- Missing lumps are ordered (ascending) by their id, after present lumps.
 	-- It is intended to keep the order of lump payloads from the source.
+	-- It puts the last lump first in order to give it unlimited storage space when possible.
 	-- It does not alter lumps array.
 	-- lumps: BspContext.lumpsSrc or BspContext.gameLumpsSrc
 	local indexes = {}
@@ -1225,18 +1274,18 @@ local function lumpIndexesOrderedFromOffset(lumps)
 		local filelenB = lumps[indexB].filelen
 		if fileofsA > 0 and filelenA > 0 then
 			if fileofsB > 0 and filelenB > 0 then
-				-- lowest offset comes first
-				return fileofsA < fileofsB
+				-- highest offset comes first
+				return fileofsA > fileofsB
 			else
-				-- missing lump at indexB comes after if injected
+				-- missing lump at indexB comes after if replaced
 				return true
 			end
 		else
 			if fileofsB > 0 and filelenB > 0 then
-				-- missing lump at indexA comes after if injected
+				-- missing lump at indexA comes after if replaced
 				return false
 			else
-				-- put extra injected lump payloads in the order of the lumps array
+				-- put missing lump payloads in the order of the lumps array
 				return indexA < indexB
 			end
 		end
@@ -1348,7 +1397,30 @@ BspContext = {
 		-- Copy the whole source file map into the destination map
 		self.streamSrc:Seek(0)
 		do
-			local remainingBytes = self.streamSrc:Size()
+			local remainingBytes = self.streamSrc:Size() -- okay but may waste space due to last editing
+			do
+				-- Truncate the destination map to the latest present lump (to save space from last time):
+				local remainingBytes_
+				local allLumpsSrc = {}
+				for i = 1, #self.lumpsSrc do
+					allLumpsSrc[i] = self.lumpsSrc[i]
+				end
+				for i = 1, #self.gameLumpsSrc do
+					allLumpsSrc[#allLumpsSrc + 1] = self.gameLumpsSrc[i]
+				end
+				local lastLumpInfo = allLumpsSrc[lumpIndexesOrderedDescFromOffset(allLumpsSrc)[1]]
+				remainingBytes_ = lastLumpInfo.fileofs + lastLumpInfo.filelen
+				if remainingBytes_ <= remainingBytes then
+					if remainingBytes_ < remainingBytes then
+						print("Saved " .. (remainingBytes - remainingBytes_) .. " bytes by truncating the initial map copy!")
+					end
+					remainingBytes = remainingBytes_
+				else
+					print("The map is corrupted: reached end-of-file before end of last lump!")
+				end
+				-- Note: it can be good to save again the .bsp to really truncate it after modifications.
+				-- You can use the old commented out remainingBytes value if you feel like a corruption happened.
+			end
 			while remainingBytes > 0 do
 				local toRead_bytes = math.min(BUFFER_LENGTH, remainingBytes)
 				streamDst:Write(self.streamSrc:Read(toRead_bytes))
@@ -1360,7 +1432,7 @@ BspContext = {
 		local LUMP_GAME_LUMP = lumpNameToLuaIndex.LUMP_GAME_LUMP
 		local LUMP_PAKFILE = lumpNameToLuaIndex.LUMP_PAKFILE
 		local LUMP_XZIPPAKFILE = lumpNameToLuaIndex.LUMP_XZIPPAKFILE
-		for _, i in ipairs(lumpIndexesOrderedFromOffset(self.lumpsSrc)) do
+		for _, i in ipairs(lumpIndexesOrderedDescFromOffset(self.lumpsSrc)) do
 			-- Works fine because same number of elements in lumpsSrc & lumpsDst
 			print("\tProcessing " .. lumpLuaIndexToName[i])
 			
@@ -1485,14 +1557,33 @@ BspContext = {
 				else
 					collectgarbage()
 					local payload = lumpsDst[i].payload
+					local lumpInfoSrc = self.lumpsSrc[i]
+					local payloadRoom = lumpInfoSrc.filelen
+					if lumpInfoSrc.payload ~= nil
+					and lumpInfoSrc.fileofs + lumpInfoSrc.filelen == streamDst:Size() then
+						-- The lump payload located at the end has unlimited storage!
+						payloadRoom = nil
+					end
 					if payload ~= nil then
 						-- The lump to copy from has a payload.
-						streamDst:Seek(self.lumpsSrc[i].fileofs) -- 0 if initially absent: written ok at the end
-						lumpsDst[i] = payload:copyTo(streamDst, withCompression, self.lumpsSrc[i].filelen)
+						streamDst:Seek(lumpInfoSrc.fileofs) -- 0 if initially absent: written ok at the end
+						lumpsDst[i] = payload:copyTo(streamDst, withCompression, payloadRoom)
+						if payloadRoom == nil then
+							-- Redefine the end of the file.
+							print("\t\tTruncating after final lump payload...")
+							streamDst:truncate()
+						end
 					else
 						-- The lump to copy is a null payload.
-						if self.lumpsSrc[i].payload ~= nil then
-							LumpPayload:erasePrevious(self, streamDst, self.lumpsSrc[i])
+						if lumpInfoSrc.payload ~= nil then
+							if payloadRoom == nil then
+								-- Redefine the end of the file.
+								print("\t\tTruncating before removed final lump payload...")
+								streamDst:Seek(lumpInfoSrc.fileofs)
+								streamDst:truncate()
+							else
+								LumpPayload:erasePrevious(self, streamDst, lumpInfoSrc)
+							end
 						end
 						lumpsDst[i] = lump_t:new(self, nil, false)
 					end
@@ -1534,6 +1625,10 @@ BspContext = {
 		end
 		
 		local success, message = callSafe(self.writeNewBsp_, self, streamDst)
+		local possibleSavedSpace = streamDst:sizeUntruncated() - streamDst:Size()
+		if possibleSavedSpace ~= 0 then
+			print("You can save " .. possibleSavedSpace .. " bytes by loading & saving the modified map! Lua does not let us truncate it for you.")
+		end
 		streamDst:Close()
 		if not success then
 			error(message)
