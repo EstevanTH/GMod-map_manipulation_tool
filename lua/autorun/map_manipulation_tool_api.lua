@@ -511,7 +511,6 @@ local entityClassesForceLua = {
 	-- In addition, class names starting with npc_ / weapon_ / item_ are forced too.
 	["ambient_generic"] = true,
 	["env_sprite"] = true,
-	--["env_projectedtexture"] = true, -- no: branding purpose [not tested]
 	["func_breakable"] = true,
 	["func_breakable_surf"] = true,
 	["func_brush"] = true,
@@ -521,13 +520,10 @@ local entityClassesForceLua = {
 	["func_movelinear"] = true,
 	["func_platrot"] = true,
 	--["func_rotating"] = true, -- investigation
-	--["game_text"] = true, -- no: branding purpose [not tested]
-	--["infodecal"] = true, -- no: branding purpose [not tested]
 	["light"] = true,
 	["light_dynamic"] = true, -- almost sure
 	--["light_spot"] = true, -- TODO - investigation
 	--["point_spotlight"] = true, -- TODO - investigation
-	--["lua_run"] = true, -- no: branding & protection purposes
 	
 	-- Spawn points [garrysmod\gamemodes\base\gamemode\player.lua]:
 	["info_player_start"] = true,
@@ -558,7 +554,14 @@ local entityClassesForceLua = {
 }
 
 local entityClassesAvoidLua = {
-	-- Entity classes that should not be moved into Lua besides having a non-built-in model:
+	-- Entity classes that should not be moved into Lua despite having a non-built-in model:
+	["env_credits"] = true, -- branding purpose [not tested]
+	["env_message"] = true, -- branding purpose [not tested]
+	["env_projectedtexture"] = true, -- branding purpose [not tested]
+	["game_text"] = true, -- branding purpose [not tested]
+	["infodecal"] = true, -- branding purpose [not tested]
+	["lua_run"] = true, -- branding & protection purposes
+	["point_message"] = true, -- branding purpose [not tested]
 }
 
 local entityKeyValuesNotInLua = {
@@ -574,7 +577,7 @@ local entityClassesForceRespawn = {
 }
 
 local entityClassesAvoidRespawn = {
-	-- Entity classes that should not be moved into Lua besides having a prefix mentioned above:
+	-- Entity classes that should not be respawned despite having a prefix mentioned above:
 }
 
 
@@ -1989,8 +1992,8 @@ BspContext = {
 			[[			end]],
 			[[		end]],
 		}
-		local entitiesTextLuaSpawn = {} -- after creating everything (all entities ready)
-		local newMapCreationId = 32768 -- safest choice: 1 + max of signed 16-bit
+		local targetnamesAsTemplates = {}
+		local entitiesInfo = {}
 		for i = 1, #entitiesText do
 			local entityText = entitiesText[i]
 			
@@ -2025,10 +2028,39 @@ BspContext = {
 						targetnamesWithChildren[value] = true
 					end
 				end
+				if classname == "point_template" then
+					-- point_template's must exclude from Lua the entities they refer to.
+					for j = #entityKeyValues, 1, -1 do
+						local keyValue = entityKeyValues[j]
+						if string_sub(keyValue.Key, 1, 8) == "Template" then
+							targetnamesAsTemplates[keyValue.Value] = true
+						end
+					end
+				end
 			else
 				print("Could not decode the following entity description:")
 				print(entityText)
 			end
+			entitiesInfo[#entitiesInfo + 1] = { -- same indexes as entitiesText
+				entityText = entityText,
+				classname = classname,
+				hammerid = hammerid,
+				targetname = targetname,
+				model = model,
+				entityKeyValues = entityKeyValues,
+			}
+		end
+		local entitiesTextLuaSpawn = {} -- after creating everything (all entities ready)
+		local newMapCreationId = 32768 -- safest choice: 1 + max of signed 16-bit
+		for i = 1, #entitiesInfo do
+			local entityInfo = entitiesInfo[i]
+			local entityText = entityInfo.entityText
+			local classname = entityInfo.classname
+			local hammerid = entityInfo.hammerid
+			local targetname = entityInfo.targetname
+			local model = entityInfo.model
+			local entityKeyValues = entityInfo.entityKeyValues
+			
 			--[[
 			if classname then
 				presentClassNames[classname] = true
@@ -2043,6 +2075,8 @@ BspContext = {
 			if classname == nil then
 				moveToLua = false
 			elseif entityClassesAvoidLua[classname] then
+				moveToLua = false
+			elseif targetnamesAsTemplates[targetname] then
 				moveToLua = false
 			elseif entityClassesForceLua[classname] then
 				moveToLua = true
@@ -2113,6 +2147,8 @@ BspContext = {
 					entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
 					if classname == nil then
+						respawned = false
+					elseif targetnamesAsTemplates[targetname] then
 						respawned = false
 					elseif entityClassesAvoidRespawn[classname] then
 						respawned = false
