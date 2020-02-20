@@ -737,6 +737,7 @@ local LumpPayload = BaseDataStructure:newClass({
 	-- Wrapper around a lump payload
 	-- No content is held in here.
 	-- This class & its children are referred to in this file as: (LumpPayload|GameLumpPayload|payloadType)
+	-- This class is not used for LUMP_GAME_LUMP!
 	
 	lumpInfoType = lump_t, -- static; nil for now (filled after lump_t definition)
 	
@@ -1087,7 +1088,12 @@ lump_t = BaseDataStructure:newClass({
 			instance.version = lumpInfoSrc.version
 			instance.fourCC = lumpInfoSrc.fourCC
 		end
-		instance.payload = cls.payloadType:new(context, streamSrc, instance)
+		local payloadType = cls.payloadType
+		if lumpInfoSrc then
+			-- Polymorphism support:
+			payloadType = lumpInfoSrc.payloadType
+		end
+		instance.payload = payloadType:new(context, streamSrc, instance)
 		
 		return instance
 	end,
@@ -1165,6 +1171,9 @@ dgamelump_t = lump_t:newClass({
 		if lumpInfoSrc then
 			instance.id = lumpInfoSrc.id
 			instance.flags = lumpInfoSrc.flags
+		else
+			-- Recreate the payload because of polymorphism failure:
+			instance.payload = cls.payloadType:new(context, streamSrc, instance)
 		end
 		if id ~= nil then
 			instance.id = id
@@ -1311,6 +1320,7 @@ BspContext = {
 	-- Context that holds a source .bsp file and its information, as well as a destination .bsp file.
 	-- TODO - éliminer lumpIndexesToCompress si inutile, remplacer par un booléen commun
 	
+	_instances = BspContext and BspContext._instances or setmetatable({}, WEAK_KEYS),
 	filenameSrc = nil, -- source file path
 	streamSrc = nil, -- source file stream
 	bspHeader = nil, -- dheader_t object
@@ -1358,6 +1368,7 @@ BspContext = {
 		
 		instance.lumpIndexesToCompress = {}
 		
+		cls._instances[instance] = true
 		return instance
 	end,
 	
@@ -1408,13 +1419,28 @@ BspContext = {
 			gameLumpsDst[i] = self.gameLumpsDst[i]
 		end
 		
+		-- Constants:
+		local LUMP_GAME_LUMP = lumpNameToLuaIndex.LUMP_GAME_LUMP
+		local LUMP_PAKFILE = lumpNameToLuaIndex.LUMP_PAKFILE
+		local LUMP_XZIPPAKFILE = lumpNameToLuaIndex.LUMP_XZIPPAKFILE
+		
+		-- Determine if LUMP_GAME_LUMP modified:
+		local lumpGameLumpModified = false
+		for i = 1, math.max(#gameLumpsDst, #self.gameLumpsSrc) do
+			if gameLumpsDst[i] ~= self.gameLumpsSrc[i] then
+				lumpGameLumpModified = true
+				break
+			end
+		end
+		
 		-- Copy the whole source file map into the destination map
 		self.streamSrc:Seek(0)
 		do
 			local remainingBytes = self.streamSrc:Size() -- okay but may waste space due to last editing
 			do
+				local remainingBytes_ = remainingBytes
+				--[[
 				-- Truncate the destination map to the latest present lump (to save space from last time):
-				local remainingBytes_
 				local allLumpsSrc = {}
 				for i = 1, #self.lumpsSrc do
 					allLumpsSrc[i] = self.lumpsSrc[i]
@@ -1422,11 +1448,43 @@ BspContext = {
 				for i = 1, #self.gameLumpsSrc do
 					allLumpsSrc[#allLumpsSrc + 1] = self.gameLumpsSrc[i]
 				end
-				local lastLumpInfo = allLumpsSrc[lumpIndexesOrderedDescFromOffset(allLumpsSrc)[1]]
+				local lastLumpInfo = allLumpsSrc[lumpIndexesOrderedDescFromOffset(allLumpsSrc)[1] ]
 				remainingBytes_ = lastLumpInfo.fileofs + lastLumpInfo.filelen
+				]]
+				-- Better: truncate the destination map to the latest non-removed / modified lump:
+				-- Note: this could even be the latest non-modified lump, but it would induce extra changes.
+				local lumpsSrc = self.lumpsSrc
+				for _, i in ipairs(lumpIndexesOrderedDescFromOffset(lumpsSrc)) do
+					-- Reminder: null lumps in self.lumpsSrc are listed at the end of the loop, always past a break statement.
+					-- -> payloadSrc cannot be nil except for the LUMP_GAME_LUMP
+					local payloadSrc = lumpsSrc[i].payload
+					local payloadDst = lumpsDst[i].payload
+					if i == LUMP_GAME_LUMP then
+						-- In this tool the LUMP_GAME_LUMP cannot be removed, even when there are 0 game lumps.
+						-- Even if the LUMP_GAME_LUMP is missing, it would be listed after the loop exit.
+						-- Reminder: there is no payload field for the LUMP_GAME_LUMP.
+						if lumpGameLumpModified then
+							-- Modified LUMP_GAME_LUMP, truncate (final) to allow it to be actually shorter:
+							remainingBytes_ = lumpsSrc[i].fileofs
+						else
+							-- The file is now truncated enough.
+						end
+						break
+					elseif payloadDst == nil then
+						-- Removed lump, truncate more:
+						remainingBytes_ = lumpsSrc[i].fileofs
+					elseif payloadDst ~= payloadSrc then
+						-- Modified lump, truncate (final) to allow it to be actually shorter:
+						remainingBytes_ = lumpsSrc[i].fileofs
+						break
+					else
+						-- The file is now truncated enough.
+						break
+					end
+				end
 				if remainingBytes_ <= remainingBytes then
 					if remainingBytes_ < remainingBytes then
-						print("Saved " .. (remainingBytes - remainingBytes_) .. " bytes by truncating the initial map copy!")
+						print("Saved " .. (remainingBytes - remainingBytes_) .. " bytes maximum by truncating the initial map copy!")
 					end
 					remainingBytes = remainingBytes_
 				else
@@ -1443,20 +1501,14 @@ BspContext = {
 		end
 		
 		-- At this point, lumpsDst & gameLumpsDst contain lumps from self.streamSrc or external sources, with a possibly wrong fileofs.
-		local LUMP_GAME_LUMP = lumpNameToLuaIndex.LUMP_GAME_LUMP
-		local LUMP_PAKFILE = lumpNameToLuaIndex.LUMP_PAKFILE
-		local LUMP_XZIPPAKFILE = lumpNameToLuaIndex.LUMP_XZIPPAKFILE
 		for _, i in ipairs(lumpIndexesOrderedDescFromOffset(self.lumpsSrc)) do
 			-- Works fine because same number of elements in lumpsSrc & lumpsDst
 			print("\tProcessing " .. lumpLuaIndexToName[i])
 			
 			local bypassIdentical = true -- ignores self.lumpIndexesToCompress[i] on purpose
 			if i == LUMP_GAME_LUMP then
-				for j = 1, math.max(#gameLumpsDst, #self.gameLumpsSrc) do
-					if gameLumpsDst[j] ~= self.gameLumpsSrc[j] then
-						bypassIdentical = false
-						break
-					end
+				if lumpGameLumpModified then
+					bypassIdentical = false
 				end
 			else
 				if lumpsDst[i] ~= self.lumpsSrc[i] then
@@ -1466,6 +1518,15 @@ BspContext = {
 			
 			if not bypassIdentical then
 				print("\t\tModified!")
+				
+				local isFinalLump = false -- end-of-file unlimited storage?
+				local lumpInfoSrc = self.lumpsSrc[i]
+				if lumpInfoSrc.fileofs ~= 0 and lumpInfoSrc.filelen ~= 0
+				and lumpInfoSrc.fileofs + lumpInfoSrc.filelen >= streamDst:Size() then
+					-- The lump payload located at the end has unlimited storage!
+					isFinalLump = true
+				end
+				
 				local withCompression = self.lumpIndexesToCompress[i] -- true / false / nil
 				if i == LUMP_GAME_LUMP then
 					-- There is no LumpPayload object involved to write the LUMP_GAME_LUMP itself.
@@ -1501,7 +1562,7 @@ BspContext = {
 						fitsInRoom = tobool(fitsInRoom_)
 						local jumpNoFit = false -- jump to next iteration
 						if fitsInRoom then
-							-- try to stick to the initial payload room
+							-- try to stick to the initial payload room (or unlimited if last lump payload)
 							streamDst:Seek(self.lumpsSrc[i].fileofs)
 						else
 							-- move to the end
@@ -1520,7 +1581,7 @@ BspContext = {
 						
 						-- Write the game lump payloads:
 						local lastGamelumpMaxOffset
-						if fitsInRoom then
+						if fitsInRoom and not isFinalLump then
 							lastGamelumpMaxOffset = self.lumpsSrc[i].fileofs + self.lumpsSrc[i].filelen
 						end
 						for j = 1, #gameLumpsDst do
@@ -1528,12 +1589,12 @@ BspContext = {
 							print("\t\tProcessing game lump " .. int32_to_be_data(gameLumpsDst[j].id))
 							local payload = gameLumpsDst[j].payload
 							if payload ~= nil then
-								if fitsInRoom then
+								if fitsInRoom and not isFinalLump then
 									local payloadRoom = lastGamelumpMaxOffset - streamDst:Tell()
 									if not payload:copyTo(streamDst, withCompression, payloadRoom, true, true) then
 										jumpNoFit = true
 										-- Warning: compressing or decompressing game lumps will be done again.
-										print("\t\tNot enough room in the original LUMP_GAME_LUMP!")
+										print("\t\tNot enough room in the original LUMP_GAME_LUMP, retrying at the end!")
 										break
 									end
 								else
@@ -1544,6 +1605,7 @@ BspContext = {
 								end
 							else
 								-- null game lump
+								print("\t\tThe game lump #" .. j .. " has no payload!")
 								gameLumpsDst[j] = dgamelump_t:new(self, nil, false)
 							end
 						end
@@ -1556,7 +1618,7 @@ BspContext = {
 					
 					local endOfLump = streamDst:Tell()
 					lump.filelen = endOfLump - lump.fileofs
-					if fitsInRoom then
+					if fitsInRoom and not isFinalLump then
 						LumpPayload:_fillWithZeroes(streamDst, self.lumpsSrc[i].filelen - lump.filelen)
 					end
 					
@@ -1571,10 +1633,8 @@ BspContext = {
 				else
 					collectgarbage()
 					local payload = lumpsDst[i].payload
-					local lumpInfoSrc = self.lumpsSrc[i]
 					local payloadRoom = lumpInfoSrc.filelen
-					if lumpInfoSrc.payload ~= nil
-					and lumpInfoSrc.fileofs + lumpInfoSrc.filelen == streamDst:Size() then
+					if isFinalLump then
 						-- The lump payload located at the end has unlimited storage!
 						payloadRoom = nil
 					end
@@ -1582,7 +1642,7 @@ BspContext = {
 						-- The lump to copy from has a payload.
 						streamDst:Seek(lumpInfoSrc.fileofs) -- 0 if initially absent: written ok at the end
 						lumpsDst[i] = payload:copyTo(streamDst, withCompression, payloadRoom)
-						if payloadRoom == nil then
+						if payloadRoom == nil then -- unlimited end-of-file storage
 							-- Redefine the end of the file.
 							print("\t\tTruncating after final lump payload...")
 							streamDst:truncate()
@@ -1590,11 +1650,14 @@ BspContext = {
 					else
 						-- The lump to copy is a null payload.
 						if lumpInfoSrc.payload ~= nil then
-							if payloadRoom == nil then
+							if payloadRoom == nil then -- unlimited end-of-file storage
 								-- Redefine the end of the file.
-								print("\t\tTruncating before removed final lump payload...")
-								streamDst:Seek(lumpInfoSrc.fileofs)
-								streamDst:truncate()
+								if streamDst:Size() > lumpInfoSrc.fileofs then
+									-- This should not happen with a properly truncated initial copy.
+									print("\t\tTruncating before removed final lump payload...")
+									streamDst:Seek(lumpInfoSrc.fileofs)
+									streamDst:truncate()
+								end
 							else
 								LumpPayload:erasePrevious(self, streamDst, lumpInfoSrc)
 							end
@@ -2467,3 +2530,9 @@ BspContext = {
 	end,
 }
 BspContext.__index = BspContext
+
+-- Lua refresh hack:
+for context in pairs(BspContext._instances) do
+	setmetatable(context, BspContext)
+	print("Refreshed BspContext", context)
+end
