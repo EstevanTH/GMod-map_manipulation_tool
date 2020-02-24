@@ -62,6 +62,50 @@ function data_to_be(data)
 	return result
 end
 
+do
+	-- Functions to decode single-precision floats:
+	
+	local specialValues = {
+		-- Includes positive & negative integer32 equivalents
+		[0x00000000] = 0., -- 0
+		[0x80000000] = -0., -- -0
+		[-2147483648] = -0., -- -0
+		[0x7f800000] = 1./0., -- inf
+		[0xff800000] = -1./0., -- -inf
+		[-8388608] = -1./0., -- -inf
+		[0xffc00001] = math.log(-1.), -- qNaN
+		[-4194303] = math.log(-1.), -- qNaN
+		[0xff800001] = math.log(-1.), -- sNaN
+		[-8388607] = math.log(-1.), -- sNaN
+	}
+	local bit_rshift = bit.rshift
+	local bit_band = bit.band
+	local bit_bor = bit.bor
+	local function _integer_to_float32(integer_)
+		-- Decode a single-precision float from its a 32-bit integer representation
+		-- It also returns the original integer, which is accuracy-safe.
+		-- Warning: a loss of accuracy is likely to occur.
+		-- Warning: this only has been validated for the x86 architecture.
+		local float_ = specialValues[integer_]
+		if not float_ then
+			local negative_bit = bit_rshift(integer_, 31)
+			local exponent = bit_band(bit_rshift(integer_, 23), 0xFF) - 127 -- unsigned: exponent as a signed integer is uncommon
+			local mantissa = bit_bor(0x800000, bit_band(integer_, 0x7FFFFF)) -- implicit '1' bit
+			float_ = mantissa * (2 ^ exponent)
+			float_ = (negative_bit ~= 1) and float_ or -float_
+		end
+		return float_, integer_
+	end
+	function data_to_float32_le(data)
+		-- TODO - tester
+		return _integer_to_float32(data_to_le(data))
+	end
+	
+	function data_to_float32_be(data)
+		return _integer_to_float32(data_to_be(data))
+	end
+end
+
 function int32_to_le_data(num)
 	local bytes = {
 		bit.band(num, 0xFF),
@@ -96,6 +140,82 @@ function int16_to_be_data(num)
 		bit.band(num, 0xFF),
 	}
 	return string.char(unpack(bytes))
+end
+
+do
+	local bit_lshift = bit.lshift
+	local bit_bor = bit.bor
+	local function dev_float_to_int32(float_)
+		-- Translation of the tutorial at https://www.supinfo.com/cours/1CPA/chapitres/03-codage-reels#idm46739633514240
+		error("Under development")
+		
+		local negative = (float_ < 0) -- TODO - bit de signe
+		if negative then
+			float_ = -float_
+		end
+		
+		local mMax
+		if 1. > float_ then -- 2 ^ 0 > float_
+			-- Look for a lower mMax:
+			for mMax_ = -1, -129, -1 do -- -129 because I do not know the lower limit
+				if 2 ^ mMax_ <= integer_ then
+					mMax = mMax_ + 1
+					break
+				end
+			end
+			if not mMax then
+				error("Unable to find a lower mMax")
+			end
+		else
+			-- Look for a greater mMax:
+			for mMax_ = 1, 129 do -- 129 because I do not know the upper limit
+				if 2 ^ mMax_ > integer_ then
+					mMax = mMax_
+					break
+				end
+			end
+			if not mMax then
+				error("Unable to find a greater mMax")
+			end
+		end
+		
+		local bias
+		local mantissa = 0
+		do
+			local digitsBeforePoint = 0
+			local N = float_
+			local m = mMax
+			-- TODO - modifier la boucle pour avoir 24 chiffres à compter du 1er '1'
+			-- TODO - réfléchir au problème d'arrondi
+			-- TODO - vérifier risque de boucle infinie
+			while N > 0. do -- maybe infinite loop??
+				local two_power_m = 2 ^ m
+				if two_power_m > N then
+					mantissa = bit_lshift(mantissa, 1)
+				else
+					mantissa = bit_lshift(mantissa, 1)
+					mantissa = bit_bor(mantissa, 1)
+					N = N - two_power_m
+				end
+				m = m - 1
+				if m >= -1 then
+					digitsBeforePoint = digitsBeforePoint + 1 -- TODO - does not work for values with empty part before 0??
+				end
+			end
+			bias = 127 + (digitsBeforePoint - 1) -- minus 1 because there is 1 digit left to the point when normalized (1.11111111 * (2 ^ 6))
+			-- The mantissa is 24-bit plus 1 hidden:
+			if mantissa > 0xFFFFFF then
+				error("Failure: the mantissa is too wide (float_ = " .. float_ .. ")")
+				-- TODO - retirer erreur en améliorant boucle
+			end
+		end
+		
+		-- TODO - enlever bit poids fort sur mantissa
+		
+		local integer_  = 0
+		
+		-- TODO - restaurer signe
+	end
 end
 
 local writeZeroesInFile
@@ -582,6 +702,41 @@ local entityClassesAvoidRespawn = {
 
 
 --- Data structures ---
+
+do
+	local isstring = isstring
+	local string_sub = string.sub
+	local Vector = Vector
+	local Angle = Angle
+	local function read3Float32s(context, from)
+		local data_to_float32 = context.data_to_float32
+		if not isstring(from) then
+			from = from:Read(12)
+		end
+		return data_to_float32(string_sub(from, 1, 4)),
+		       data_to_float32(string_sub(from, 5, 8)),
+		       data_to_float32(string_sub(from, 9, 12))
+	end
+	function decode_Vector(context, from)
+		return Vector(read3Float32s(from))
+	end
+	function decode_QAngle(context, from)
+		local pitch, roll, yaw = read3Float32s(context, from)
+		return Angle(pitch, yaw, roll)
+	end
+end
+
+do
+	local isstring = isstring
+	local Color = Color
+	local string_byte = string.byte
+	function decode_color32(from)
+		if not isstring(from) then
+			from = from:Read(4)
+		end
+		return Color(string_byte(from, 1, 4))
+	end
+end
 
 local lumpLuaIndexToName = {} -- +1 from the original list
 local lumpNameToLuaIndex = {} -- +1 from the original list
@@ -1225,10 +1380,12 @@ local dheader_t = BaseDataStructure:newClass({
 			local ident = streamSrc:Read(4)
 			if ident == "VBSP" or ident == "rBSP" then
 				context.data_to_integer = data_to_le
+				context.data_to_float32 = data_to_float32_le
 				context.int32_to_data = int32_to_le_data
 				context.int16_to_data = int16_to_le_data
 			elseif ident == "PSBV" or ident == "PSBr" then
 				context.data_to_integer = data_to_be
+				context.data_to_float32 = data_to_float32_be
 				context.int32_to_data = int32_to_be_data
 				context.int16_to_data = int16_to_be_data
 			else
@@ -1880,8 +2037,39 @@ BspContext = {
 			if idText == "LUMP_ENTITIES" then
 				payloadString = string.gsub(text, "\r\n", "\n") .. "\0" -- may take some time
 			elseif idText == "LUMP_TEXDATA_STRING_DATA" then
-				-- TODO
-				error('Not supported yet: Lump "LUMP_TEXDATA_STRING_DATA"')
+				local materials = {} -- no duplicated values
+				local materialsOffsets = {} -- 4-byte binary strings
+				do
+					local materialOffsetsCache = {}
+					local nextMaterialOffset = 0
+					-- The following pattern:
+					-- - Allows different end-of-line kinds
+					-- - Tolerates that the terminating empty line is missing
+					-- - Tolerates empty lines
+					for material, eol in string.gmatch(text, "([^\x0D\x0A]*)([\x0D]?[\x0A]?)") do
+						if #material ~= 0 or #eol ~= 0 then
+							local materialOffset = materialOffsetsCache[material]
+							if materialOffset == nil then
+								materialOffset = self.int32_to_data(nextMaterialOffset)
+								nextMaterialOffset = nextMaterialOffset + #material + 1
+								materialOffsetsCache[material] = materialOffset
+								materials[#materials + 1] = material
+							else
+								print('Duplicated material "' .. material .. '", merging!')
+							end
+							materialsOffsets[#materialsOffsets + 1] = materialOffset
+						else
+							-- This is the trailing empty line!
+						end
+					end
+				end
+				materials[#materials + 1] = "" -- no final null-byte otherwise
+				payloadString = table.concat(materials, "\0")
+				self:setupLumpFromHeaderlessString(
+					false,
+					lumpNameToLuaIndex["LUMP_TEXDATA_STRING_TABLE"],
+					table.concat(materialsOffsets)
+				)
 			elseif idText == "LUMP_OVERLAYS" then
 				-- TODO
 				error('Not supported yet: Lump "LUMP_OVERLAYS"')
@@ -1889,7 +2077,6 @@ BspContext = {
 				error('Unsupported conversion from text to Lump "' .. tostring(idText or id) .. '"')
 			end
 		end
-		text = nil -- hoping to save memory
 		return self:setupLumpFromHeaderlessString(isGameLump, id, payloadString)
 	end,
 	
@@ -1914,6 +2101,7 @@ BspContext = {
 	end,
 	
 	extractLumpAsText = function(self, isGameLump, id, fromDst)
+		local string_find = string.find
 		local idText = getLumpNameFromLumpId(isGameLump, id)
 		local lumpInfo = self:_getLump(isGameLump, id, fromDst)
 		local payload = lumpInfo.payload
@@ -1932,15 +2120,16 @@ BspContext = {
 		else
 			if idText == "LUMP_ENTITIES" then
 				local _
-				_, _, text = string.find(payload:readAll(), "^([^%z]+)") -- closer to engine's behavior
+				_, _, text = string_find(payload:readAll(), "^([^%z]+)") -- closer to engine's behavior
 				--[[
 				if string.sub(payloadString, -1, -1) == "\0" then -- ends with a null byte
 					text = string.sub(payloadString, 1, -2) -- remove the ending null byte
 				end
 				]]
 			elseif idText == "LUMP_TEXDATA_STRING_DATA" then
-				-- TODO
-				error('Not supported yet: Lump "LUMP_TEXDATA_STRING_DATA"')
+				local materials = self:getMaterialsList(fromDst)
+				materials[#materials + 1] = "" -- empty line
+				text = table.concat(materials, "\x0A")
 			elseif idText == "LUMP_OVERLAYS" then
 				-- TODO - extraction textuelle avec traduction du matériau (pas id) et erreur si import erroné, format similaire à info_overlay
 				error('Not supported yet: Lump "LUMP_OVERLAYS"')
@@ -1956,6 +2145,178 @@ BspContext = {
 		local streamDst = FileForWrite:new(filePath, "wb", "DATA")
 		callSafe(streamDst.Write, streamDst, text)
 		streamDst:Close()
+	end,
+	
+	getStaticPropsList = function(self, fromDst)
+		error("Under construction")
+		local string_find = string.find
+		local data_to_integer = self.data_to_integer
+		local data_to_float32 = self.data_to_float32
+		local pairs = pairs
+		
+		local lumpInfo = self:_getLump(true, getLumpIdFromLumpName("sprp"), fromDst)
+		local lumpVersion = lumpInfo.version
+		local payload = lumpInfo and lumpInfo.payload or nil
+		if payload == nil then
+			print("No sprp game lump: no prop_static's in the map!")
+			return {}
+		end
+		local lumpStream = BytesIO:new(payload:readAll(), "rb") -- TODO - can be optimized by reading in-place
+		
+		-- Parsing StaticPropDictLump_t:
+		-- Original keys kept because used as a dictionary.
+		local staticPropDictLump = {}
+		local dictEntries = data_to_integer(lumpStream:Read(4))
+		for i = 0, dictEntries - 1 do
+			local _, _, model = string_find(lumpStream:Read(128), "^([^%z]+)") -- TODO - corriger wiki
+			staticPropDictLump[i] = model
+		end
+		
+		-- Parsing StaticPropLeafLump_t:
+		-- Original keys not kept because exported as-is.
+		local staticPropLeafLump = {}
+		local leafEntries = data_to_integer(lumpStream:Read(4))
+		for i = 1, leafEntries do
+			staticPropLeafLump[i] = data_to_integer(lumpStream:Read(2))
+		end
+		
+		-- Parsing all StaticPropLump_t's:
+		local staticPropLumps = {}
+		for i = 1, data_to_integer(lumpStream:Read(4)) do
+			-- The structure is based on information on the wiki as seen on 2020-01-15.
+			local staticPropLump = {}
+			staticPropLump.Origin = decode_Vector(self, lumpStream) -- Vector
+			staticPropLump.Angles = decode_QAngle(self, lumpStream) -- QAngle
+			staticPropLump.PropType = data_to_integer(lumpStream:Read(2)) -- unsigned short
+			if not staticPropDictLump[staticPropLump.PropType] then
+				error("Wrong sprp game lump format: StaticPropLump_t.PropType out-of-range in prop_static #" .. i)
+			end
+			staticPropLump.FirstLeaf = data_to_integer(lumpStream:Read(2)) -- unsigned short
+			if staticPropLump.FirstLeaf >= leafEntries then
+				error("Wrong sprp game lump format: StaticPropLump_t.FirstLeaf out-of-range in prop_static #" .. i)
+			end
+			staticPropLump.LeafCount = data_to_integer(lumpStream:Read(2)) -- unsigned short
+			if staticPropLump.FirstLeaf + staticPropLump.LeafCount - 1 >= leafEntries then
+				error("Wrong sprp game lump format: StaticPropLump_t.LeafCount out-of-range in prop_static #" .. i)
+			end
+			staticPropLump.Solid = data_to_integer(lumpStream:Read(1)) -- unsigned char
+			staticPropLump.Flags = data_to_integer(lumpStream:Read(1)) -- unsigned char
+			staticPropLump.Skin = data_to_integer(lumpStream:Read(4)) -- int
+			staticPropLump.FadeMinDist = data_to_float32(lumpStream:Read(4)) -- float
+			staticPropLump.FadeMaxDist = data_to_float32(lumpStream:Read(4)) -- float
+			staticPropLump.LightingOrigin = decode_Vector(self, lumpStream) -- Vector
+			if lumpVersion >= 5 then
+				staticPropLump.ForcedFadeScale = data_to_float32(lumpStream:Read(4)) -- float
+			end
+			if lumpVersion >= 6 and lumpVersion <= 7 then
+				staticPropLump.MinDXLevel = data_to_integer(lumpStream:Read(2)) -- unsigned short
+				staticPropLump.MaxDXLevel = data_to_integer(lumpStream:Read(2)) -- unsigned short
+			end
+			if lumpVersion >= 8 then
+				staticPropLump.MinCPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
+				staticPropLump.MaxCPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
+				staticPropLump.MinGPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
+				staticPropLump.MaxGPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
+			end
+			if lumpVersion >= 7 then
+				staticPropLump.DiffuseModulation = decode_color32(lumpStream) -- color32
+			end
+			if lumpVersion >= 9 and lumpVersion <= 10 then
+				staticPropLump.DisableX360 = data_to_integer(lumpStream:Read(4)) -- bool
+			end
+			if lumpVersion >= 10 then
+				staticPropLump.FlagsEx = data_to_integer(lumpStream:Read(4)) -- unsigned int
+			end
+			if lumpVersion >= 11 then
+				staticPropLump.UniformScale = data_to_float32(lumpStream:Read(4)) -- float
+			end
+			staticPropLumps[#staticPropLumps + 1] = staticPropLump
+		end
+		
+		-- Transform staticPropLumps into the same, but with translated fields (identical to prop_dynamic keyvalues):
+		local staticPropsKeyValues = {}
+		for i, propInfo in staticPropLumps do
+			local propKeyValues = {}
+			for key, value in pairs(propInfo) do
+				-- TODO - vérifier keyvalues dans Garry's Mod
+				if key == "Origin" then
+					propKeyValues["origin"] = value
+				elseif key == "Angles" then
+					propKeyValues["angles"] = value
+				elseif key == "PropType" then
+					propKeyValues["model"] = dictEntries[value]
+				elseif key == "Solid" then
+					propKeyValues["solid"] = value
+				elseif key == "Flags" then
+					propKeyValues["spawnflags"] = value
+				elseif key == "Skin" then
+					propKeyValues["skin"] = value
+				elseif key == "FadeMinDist" then
+					propKeyValues["fademindist"] = value
+				elseif key == "FadeMaxDist" then
+					propKeyValues["fademaxdist"] = value
+				elseif key == "LightingOrigin" then
+					propKeyValues["lightingorigin"] = value -- TODO - vérifier dans la partie, normalement targetname
+				elseif key == "ForcedFadeScale" then
+					propKeyValues["fadescale"] = value
+				elseif key == "MinDXLevel" then
+					propKeyValues["mindxlevel"] = value
+				elseif key == "MaxDXLevel" then
+					propKeyValues["maxdxlevel"] = value
+				elseif key == "MinCPULevel" then
+					propKeyValues["mincpulevel"] = value
+				elseif key == "MaxCPULevel" then
+					propKeyValues["maxcpulevel"] = value
+				elseif key == "MinGPULevel" then
+					propKeyValues["mingpulevel"] = value
+				elseif key == "MaxGPULevel" then
+					propKeyValues["maxgpulevel"] = value
+				elseif key == "DiffuseModulation" then
+					propKeyValues["rendercolor"] = value
+				elseif key == "UniformScale" then
+					propKeyValues["modelscale"] = value
+				else
+					propKeyValues[key] = value
+				end
+			end
+			staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
+		end
+		
+		return staticPropsKeyValues, staticPropLumps, staticPropDictLump, staticPropLeafLump
+	end,
+	
+	getMaterialsList = function(self, fromDst)
+		local string_find = string.find
+		
+		local payloadStringData = self:_getLump(false, lumpNameToLuaIndex["LUMP_TEXDATA_STRING_DATA"], fromDst).payload
+		if payloadStringData == nil then
+			print("The LUMP_TEXDATA_STRING_DATA is a null lump, cannot proceed!")
+			return {}
+		end
+		local binaryStringData = payloadStringData:readAll()
+		
+		local payloadStringTable = self:_getLump(false, lumpNameToLuaIndex["LUMP_TEXDATA_STRING_TABLE"], fromDst).payload
+		if payloadStringTable == nil then
+			print("The LUMP_TEXDATA_STRING_TABLE is a null lump, fallback activated!")
+		end
+		local binaryStringTable = payloadStringTable and payloadStringTable:readAll() or nil
+		
+		local materials = {}
+		if binaryStringTable then
+			-- Using offsets to find every material:
+			for materialOffset in string.gmatch(binaryStringTable, "(....)") do
+				materialOffset = self.data_to_integer(materialOffset)
+				local _, _, material = string_find(binaryStringData, "^([^%z]*)%z", materialOffset + 1)
+				materials[#materials + 1] = material
+			end
+		else -- missing LUMP_TEXDATA_STRING_TABLE
+			-- Reading strings until the end:
+			for material in string.gmatch(binaryStringData, "([^%z]*)%z") do
+				materials[#materials + 1] = material
+			end
+		end
+		
+		return materials
 	end,
 	
 	moveEntitiesToLua = function(self)
