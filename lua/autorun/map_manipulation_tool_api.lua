@@ -42,41 +42,50 @@ local WEAK_VALUES = {__mode = "v"}
 
 --- Utility ---
 
-function data_to_le(data)
-	-- Decode a binary string into a 4-byte-max little-endian integer
-	local result = 0
-	local bytes = {string.byte(data, 1, #data)}
-	for i = #bytes, 1, -1 do
-		result = bit.bor(bit.lshift(result, 8), bytes[i])
+do
+	-- 32-bit integers are signed, other lengths are unsigned
+	
+	local bit_bor = bit.bor
+	local bit_lshift = bit.lshift
+	local string_byte = string.byte
+	
+	function data_to_le(data)
+		-- Decode a binary string into a 4-byte-max little-endian integer
+		local result = 0
+		local bytes = {string_byte(data, 1, #data)}
+		for i = #bytes, 1, -1 do
+			result = bit_bor(bit_lshift(result, 8), bytes[i])
+		end
+		return result
 	end
-	return result
-end
-
-function data_to_be(data)
-	-- Decode a binary string into a 4-byte-max big-endian integer
-	local result = 0
-	local bytes = {string.byte(data, 1, #data)}
-	for i = 1, #bytes, 1 do
-		result = bit.bor(bit.lshift(result, 8), bytes[i])
+	
+	function data_to_be(data)
+		-- 32-bit integers are signed, other lengths are unsigned
+		local result = 0
+		local bytes = {string_byte(data, 1, #data)}
+		for i = 1, #bytes, 1 do
+			result = bit_bor(bit_lshift(result, 8), bytes[i])
+		end
+		return result
 	end
-	return result
 end
 
 do
 	-- Functions to decode single-precision floats:
 	
+	local _nan = math.log(-1.)
 	local specialValues = {
-		-- Includes positive & negative integer32 equivalents
+		-- Includes positive & negative int32 equivalents
 		[0x00000000] = 0., -- 0
 		[0x80000000] = -0., -- -0
 		[-2147483648] = -0., -- -0
 		[0x7f800000] = 1./0., -- inf
 		[0xff800000] = -1./0., -- -inf
 		[-8388608] = -1./0., -- -inf
-		[0xffc00001] = math.log(-1.), -- qNaN
-		[-4194303] = math.log(-1.), -- qNaN
-		[0xff800001] = math.log(-1.), -- sNaN
-		[-8388607] = math.log(-1.), -- sNaN
+		[0xffc00001] = _nan, -- qNaN
+		[-4194303] = _nan, -- qNaN
+		[0xff800001] = _nan, -- sNaN
+		[-8388607] = _nan, -- sNaN
 	}
 	local bit_rshift = bit.rshift
 	local bit_band = bit.band
@@ -84,18 +93,32 @@ do
 	local function _integer_to_float32(integer_)
 		-- Decode a single-precision float from its a 32-bit integer representation
 		-- It also returns the original integer, which is accuracy-safe.
-		-- Warning: a loss of accuracy is likely to occur.
-		-- Warning: this only has been validated for the x86 architecture.
+		local exponent
 		local float_ = specialValues[integer_]
 		if not float_ then
+			exponent = bit_band(bit_rshift(integer_, 23), 0xFF) -- unsigned: exponent as a signed integer is uncommon
+			if exponent == 0xFF then
+				-- zero & most NaN representations already handled with specialValues
+				float_ = _nan
+			end
+		end
+		if not float_ then
 			local negative_bit = bit_rshift(integer_, 31)
-			local exponent = bit_band(bit_rshift(integer_, 23), 0xFF) - 127 -- unsigned: exponent as a signed integer is uncommon
-			local mantissa = bit_bor(0x800000, bit_band(integer_, 0x7FFFFF)) -- implicit '1' bit
-			float_ = mantissa * (2 ^ exponent)
+			local mantissa = bit_band(integer_, 0x7FFFFF)
+			if exponent ~= 0 then
+				exponent = exponent - 127
+				mantissa = bit_bor(0x800000, mantissa) -- implicit '1' bit (before point)
+			else -- subnormal
+				exponent = -126
+				mantissa = mantissa
+			end
+			-- - 23 to offset the binary point by 23 digits to the left
+			float_ = mantissa * (2 ^ (exponent - 23))
 			float_ = (negative_bit ~= 1) and float_ or -float_
 		end
-		return float_, integer_
+		return float_
 	end
+	
 	function data_to_float32_le(data)
 		-- TODO - tester
 		return _integer_to_float32(data_to_le(data))
@@ -143,79 +166,138 @@ function int16_to_be_data(num)
 end
 
 do
-	local bit_lshift = bit.lshift
+	-- Functions to encode single-precision floats
+	-- Note: values are clamped naturally below min/max values and explicitly around +/- 0.
+	
 	local bit_bor = bit.bor
-	local function dev_float_to_int32(float_)
-		-- Translation of the tutorial at https://www.supinfo.com/cours/1CPA/chapitres/03-codage-reels#idm46739633514240
-		error("Under development")
-		
-		local negative = (float_ < 0) -- TODO - bit de signe
-		if negative then
-			float_ = -float_
-		end
-		
-		local mMax
-		if 1. > float_ then -- 2 ^ 0 > float_
-			-- Look for a lower mMax:
-			for mMax_ = -1, -129, -1 do -- -129 because I do not know the lower limit
-				if 2 ^ mMax_ <= integer_ then
-					mMax = mMax_ + 1
-					break
-				end
-			end
-			if not mMax then
-				error("Unable to find a lower mMax")
-			end
-		else
-			-- Look for a greater mMax:
-			for mMax_ = 1, 129 do -- 129 because I do not know the upper limit
-				if 2 ^ mMax_ > integer_ then
-					mMax = mMax_
-					break
-				end
-			end
-			if not mMax then
-				error("Unable to find a greater mMax")
+	local bit_lshift = bit.lshift
+	local tostring = tostring
+	
+	local specialValues = {
+		-- To ensure proper conversion, the string representation is used.
+		[tostring( 0.)] = 0x00000000, -- 0
+		[tostring(-0.)] = 0x80000000, -- -0
+		[tostring( 1./0.)] = 0x7f800000, -- inf
+		[tostring(-1./0.)] = 0xff800000, -- -inf
+		[tostring(math.log(-1.))] = 0xffc00001, -- qNaN
+	}
+	
+	--[[
+	local function _debug_binary_float32(integer_)
+		-- Only for debugging
+		local digits = {"\t\t"}
+		for digitId = 31, 0, -1 do
+			digits[#digits + 1] = tostring(bit.band(bit.rshift(integer_, digitId), 1))
+			if digitId == 31 or digitId == 23 then
+				digits[#digits + 1] = " "
 			end
 		end
-		
-		local bias
-		local mantissa = 0
-		do
-			local digitsBeforePoint = 0
-			local N = float_
-			local m = mMax
-			-- TODO - modifier la boucle pour avoir 24 chiffres à compter du 1er '1'
-			-- TODO - réfléchir au problème d'arrondi
-			-- TODO - vérifier risque de boucle infinie
-			while N > 0. do -- maybe infinite loop??
-				local two_power_m = 2 ^ m
-				if two_power_m > N then
-					mantissa = bit_lshift(mantissa, 1)
-				else
-					mantissa = bit_lshift(mantissa, 1)
-					mantissa = bit_bor(mantissa, 1)
-					N = N - two_power_m
-				end
-				m = m - 1
-				if m >= -1 then
-					digitsBeforePoint = digitsBeforePoint + 1 -- TODO - does not work for values with empty part before 0??
-				end
-			end
-			bias = 127 + (digitsBeforePoint - 1) -- minus 1 because there is 1 digit left to the point when normalized (1.11111111 * (2 ^ 6))
-			-- The mantissa is 24-bit plus 1 hidden:
-			if mantissa > 0xFFFFFF then
-				error("Failure: the mantissa is too wide (float_ = " .. float_ .. ")")
-				-- TODO - retirer erreur en améliorant boucle
-			end
-		end
-		
-		-- TODO - enlever bit poids fort sur mantissa
-		
-		local integer_  = 0
-		
-		-- TODO - restaurer signe
+		print(table.concat(digits))
 	end
+	]]
+	
+	local function _float32_to_int32(float_)
+		local integer_ = specialValues[tostring(float_)]
+		if not integer_ then
+			-- Take away the sign:
+			local negative = (float_ < 0.)
+			if negative then
+				float_ = -float_
+			end
+			
+			-- Find the proper exponent:
+			local exponent
+			local substractedPowerOf2
+			local subnormal = false
+			for exponent_ = 127, -126, -1 do
+				-- 1st try, normal value:
+				substractedPowerOf2 = float_ - (2 ^ exponent_)
+				if substractedPowerOf2 >= 0. then -- found 1st '1' bit in mantissa
+					exponent = exponent_
+					float_ = substractedPowerOf2 -- bit #23 (implicit)
+					break
+				end
+			end
+			if not exponent then
+				-- 2nd try, subnormal value:
+				subnormal = true
+				exponent = -126
+			end
+			
+			-- Calculate the mantissa:
+			local mantissa = 0 -- as written (without the explicit '1' bit)
+			for mantissaBit = 22, 0, -1 do
+				local exponent_ = exponent - 23 + mantissaBit -- exponent-1, exponent-2, etc.
+				substractedPowerOf2 = float_ - (2 ^ exponent_)
+				if substractedPowerOf2 >= 0. then -- '1' bit in mantissa
+					mantissa = bit_bor(mantissa, bit_lshift(1, mantissaBit))
+					float_ = substractedPowerOf2 -- bit #mantissaBit
+				end
+			end
+			if subnormal and mantissa == 0 then
+				-- Clamp tiny non-zero to minimum non-zero value:
+				mantissa = 1
+			end
+			
+			-- Calculate the encoded exponent (applying bias):
+			if not subnormal then
+				exponent = exponent + 127 -- range: 0x01 to 0xfe
+			else
+				exponent = 0x00
+			end
+			
+			-- Putting everything together in the final value:
+			integer_ = bit_bor(
+				negative and 0x80000000 or 0x00000000,
+				bit_lshift(exponent, 23),
+				mantissa
+			)
+		end
+		return integer_
+	end
+	
+	function float32_to_le_data(float_)
+		-- TODO - tester
+		return int32_to_le_data(_float32_to_int32(float_))
+	end
+	
+	function float32_to_be_data(float_)
+		return int32_to_be_data(_float32_to_int32(float_))
+	end
+	
+	--[[
+	if CLIENT then
+		-- "([0-9a-f]{2})([0-9a-f]{2}) ([0-9a-f]{2})([0-9a-f]{2})"
+		-- "\\x$1\\x$2\\x$3\\x$4"
+		print("Example values from Wikipedia:")
+		for _, convertAttempts in ipairs({
+			{"\t1.4012984643e-45 =", "\x00\x00\x00\x01"},
+			{"\t1.1754942107e-38 =", "\x00\x7f\xff\xff"},
+			{"\t1.1754943508e-38 =", "\x00\x80\x00\x00"},
+			{"\t3.4028234664e+38 =", "\x7f\x7f\xff\xff"},
+			{"\t0.9999999404     =", "\x3f\x7f\xff\xff"},
+			{"\t1                =", "\x3f\x80\x00\x00"},
+			{"\t1.0000001192     =", "\x3f\x80\x00\x01"},
+			{"\t−2               =", "\xc0\x00\x00\x00"},
+			{"\t+0               =", "\x00\x00\x00\x00"},
+			{"\t-0               =", "\x80\x00\x00\x00"},
+			{"\t+infinity        =", "\x7f\x80\x00\x00"},
+			{"\t-infinity        =", "\xff\x80\x00\x00"},
+			{"\t3.14159274101    =", "\x40\x49\x0f\xdb"},
+			{"\t0.333333343267   =", "\x3e\xaa\xaa\xab"},
+			{"\tqNaN             =", "\xff\xc0\x00\x01"},
+			{"\tsNaN             =", "\xff\x80\x00\x01"},
+		}) do
+			local float_ = data_to_float32_be(convertAttempts[2])
+			local float2 = data_to_float32_be(float32_to_be_data(float_))
+			print(convertAttempts[1], string.format("%9s\t%9s", tostring(float_), tostring(float2)))
+		end
+		print(data_to_float32_be(float32_to_be_data( 5e+120)))
+		print(data_to_float32_be(float32_to_be_data( 5e-120)))
+		print(data_to_float32_be(float32_to_be_data(-5e-120)))
+		print(data_to_float32_be(float32_to_be_data(-5e+120)))
+	end
+	]]
 end
 
 local writeZeroesInFile
@@ -1383,15 +1465,19 @@ local dheader_t = BaseDataStructure:newClass({
 				context.data_to_float32 = data_to_float32_le
 				context.int32_to_data = int32_to_le_data
 				context.int16_to_data = int16_to_le_data
+				context.float32_to_data = float32_to_le_data
 			elseif ident == "PSBV" or ident == "PSBr" then
 				context.data_to_integer = data_to_be
 				context.data_to_float32 = data_to_float32_be
 				context.int32_to_data = int32_to_be_data
 				context.int16_to_data = int16_to_be_data
+				context.float32_to_data = float32_to_be_data
 			else
 				context.data_to_integer = nil
+				context.data_to_float32 = nil
 				context.int32_to_data = nil
 				context.int16_to_data = nil
+				context.float32_to_data = nil
 				error([[The "VBSP" magic header was not found. This map does not seem to be a valid Source Engine map.]])
 			end
 			
