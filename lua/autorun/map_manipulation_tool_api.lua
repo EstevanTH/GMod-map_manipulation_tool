@@ -300,6 +300,73 @@ do
 	]]
 end
 
+do
+	local isstring = isstring
+	local string_sub = string.sub
+	local Vector = Vector
+	local Angle = Angle
+	local table_concat = table.concat
+	
+	local function read3Float32s(context, from)
+		local data_to_float32 = context.data_to_float32
+		if not isstring(from) then
+			from = from:Read(12)
+		end
+		return data_to_float32(string_sub(from, 1, 4)),
+		       data_to_float32(string_sub(from, 5, 8)),
+		       data_to_float32(string_sub(from, 9, 12))
+	end
+	
+	function decode_Vector(context, from)
+		return Vector(read3Float32s(context, from))
+	end
+	
+	function decode_QAngle(context, from)
+		return Angle(read3Float32s(context, from))
+	end
+	
+	function Vector_to_data(context, from)
+		local pieces = {
+			context.float32_to_data(from.x),
+			context.float32_to_data(from.y),
+			context.float32_to_data(from.z),
+		}
+		return table_concat(pieces)
+	end
+	
+	function QAngle_to_data(context, from)
+		local pieces = {
+			context.float32_to_data(from.p),
+			context.float32_to_data(from.y),
+			context.float32_to_data(from.r),
+		}
+		return table_concat(pieces)
+	end
+end
+
+do
+	local isstring = isstring
+	local Color = Color
+	local string_byte = string.byte
+	local string_char = string.char
+	
+	function decode_color32(from)
+		if not isstring(from) then
+			from = from:Read(4)
+		end
+		return Color(string_byte(from, 1, 4))
+	end
+	
+	function ColorFromText(text)
+		local r, g, b, a = string.match(text, "^%s*([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])")
+		return Color(tonumber(r), tonumber(g), tonumber(b), tonumber(a))
+	end
+	
+	function color32_to_data(from)
+		return string_char(from.r, from.g, from.b, from.a)
+	end
+end
+
 local writeZeroesInFile
 do
 	local math_min = math.min
@@ -633,6 +700,21 @@ do
 	end
 end
 
+local anyToKeyValueString
+do
+	-- util.TableToKeyValues() changes the case of a few key names, using this instead!
+	-- "maxdxlevel" -> "MaxDxLevel"
+	local string_gsub = string.gsub
+	local tostring = tostring
+	local replacements = {
+		["\0"] = "",
+		['"'] = '\\"',
+	}
+	function anyToKeyValueString(initial)
+		return '"' .. string_gsub(tostring(initial), '.', replacements) .. '"'
+	end
+end
+
 
 --- Entities ---
 
@@ -782,43 +864,57 @@ local entityClassesAvoidRespawn = {
 	-- Entity classes that should not be respawned despite having a prefix mentioned above:
 }
 
+local staticPropsKeyValuesOrder = {
+	-- Order in which to list keyvalues & properties for prop_static's
+	-- Look at BspContext.extractLumpAsText() and StaticPropLump_t.
+	-- Every field from StaticPropLump_t should be listed here!
+	"origin",
+	"angles",
+	"model",
+	"FirstLeaf",
+	"LeafCount",
+	"solid",
+	"spawnflags",
+	"skin",
+	"fademindist",
+	"fademaxdist",
+	"lightingorigin~",
+	"fadescale",
+	"mindxlevel",
+	"maxdxlevel",
+	"mincpulevel",
+	"maxcpulevel",
+	"mingpulevel",
+	"maxgpulevel",
+	"rendercolor",
+	"DisableX360",
+	"FlagsEx",
+	"modelscale",
+}
+
+local staticPropsToDynamicKeyValues = {
+	-- Keyvalues that are maintained when transforming a prop_static into a prop_dynamic
+	["origin"] = true,
+	["angles"] = true,
+	["model"] = true,
+	["solid"] = true,
+	["spawnflags"] = true,
+	["skin"] = true,
+	["fademindist"] = true,
+	["fademaxdist"] = true,
+	["fadescale"] = true,
+	["mindxlevel"] = true,
+	["maxdxlevel"] = true,
+	["mincpulevel"] = true,
+	["maxcpulevel"] = true,
+	["mingpulevel"] = true,
+	["maxgpulevel"] = true,
+	["rendercolor"] = true,
+	["modelscale"] = true,
+}
+
 
 --- Data structures ---
-
-do
-	local isstring = isstring
-	local string_sub = string.sub
-	local Vector = Vector
-	local Angle = Angle
-	local function read3Float32s(context, from)
-		local data_to_float32 = context.data_to_float32
-		if not isstring(from) then
-			from = from:Read(12)
-		end
-		return data_to_float32(string_sub(from, 1, 4)),
-		       data_to_float32(string_sub(from, 5, 8)),
-		       data_to_float32(string_sub(from, 9, 12))
-	end
-	function decode_Vector(context, from)
-		return Vector(read3Float32s(from))
-	end
-	function decode_QAngle(context, from)
-		local pitch, roll, yaw = read3Float32s(context, from)
-		return Angle(pitch, yaw, roll)
-	end
-end
-
-do
-	local isstring = isstring
-	local Color = Color
-	local string_byte = string.byte
-	function decode_color32(from)
-		if not isstring(from) then
-			from = from:Read(4)
-		end
-		return Color(string_byte(from, 1, 4))
-	end
-end
 
 local lumpLuaIndexToName = {} -- +1 from the original list
 local lumpNameToLuaIndex = {} -- +1 from the original list
@@ -2111,11 +2207,165 @@ BspContext = {
 	setupLumpFromText = function(self, isGameLump, id, text)
 		local payloadString
 		local idText = getLumpNameFromLumpId(isGameLump, id)
+		local lumpFieldsToSet = {}
 		if isGameLump then
 			if idText == "sprp" then
-				-- TODO
-				-- TODO - objet(s) supplémentaire(s) avec méta-informations
-				error('Not supported yet: Game Lump "sprp"')
+				-- Warning: keys are case-sentitive!
+				-- TODO - comprendre les physiques BBox
+				local string_rep = string.rep
+				local tonumber = tonumber
+				local util_KeyValuesToTable = util.KeyValuesToTable
+				local string_char = string.char
+				local int16_to_data = self.int16_to_data
+				local int32_to_data = self.int32_to_data
+				local float32_to_data = self.float32_to_data
+				
+				local entitiesText = self:_explodeEntitiesText(text)
+				for k, v in pairs(util_KeyValuesToTable('"Lump attributes"\x0A' .. entitiesText[1], false, true)) do
+					if k == "version" or k == "flags" then -- security
+						lumpFieldsToSet[k] = tonumber(v)
+					end
+				end
+				lumpFieldsToSet.version = lumpFieldsToSet.version or 4
+				local lumpVersion = lumpFieldsToSet.version
+				
+				local staticPropLeafLump = util.KeyValuesToTablePreserveOrder('"StaticPropLeafLump_t"\x0A' .. entitiesText[2], false, true)
+				for i, leafPair in ipairs(staticPropLeafLump) do
+					staticPropLeafLump[i] = tonumber(leafPair.Value)
+				end
+				local leafEntries = #staticPropLeafLump
+				
+				local staticPropDictLump = {} -- index -> model
+				local modelIndexes = {} -- model -> {index - 1} in staticPropDictLump
+				local staticPropsKeyValues = {}
+				for i = 3, #entitiesText do
+					local entityText = entitiesText[i]
+					local propKeyValues = util_KeyValuesToTable('"prop_static #' .. (i - 2) .. '"\x0A' .. entityText, false, true)
+					if propKeyValues then
+						staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
+						local model = propKeyValues["model"]
+						if not model or #model > 127 then
+							print('Invalid model "' .. tostring(model) .. '": value is missing or longer than 127 bytes!')
+							model = "models/error.mdl"
+							-- It does not help if it is simply removed.
+						end
+						if not modelIndexes[model] then
+							local index = #staticPropDictLump + 1
+							staticPropDictLump[index] = model
+							modelIndexes[model] = index - 1
+						end
+					else
+						staticPropsKeyValues[#staticPropsKeyValues + 1] = false -- to preserve indexes
+						print("Could not decode the following prop_static description:")
+						print(entityText)
+					end
+				end
+				-- print("staticPropsKeyValues[1] =")PrintTable(staticPropsKeyValues[1]) -- debug
+				
+				local staticPropLumps = {}
+				for i = 1, #staticPropsKeyValues do
+					local propKeyValues = staticPropsKeyValues[i]
+					if propKeyValues then
+						local staticPropLump = {
+							-- Default value included for every StaticPropLump_t field
+							Origin = Vector(propKeyValues["origin"]), -- Vector
+							Angles = Angle(propKeyValues["angles"]), -- QAngle
+							PropType = modelIndexes[propKeyValues["model"]], -- unsigned short
+							FirstLeaf = tonumber(propKeyValues["FirstLeaf"] or 0), -- unsigned short
+							LeafCount = tonumber(propKeyValues["LeafCount"] or 0), -- unsigned short
+							Solid = tonumber(propKeyValues["solid"] or 0), -- unsigned char
+							Flags = tonumber(propKeyValues["spawnflags"] or 0), -- unsigned char
+							Skin = tonumber(propKeyValues["skin"] or 0), -- int
+							FadeMinDist = tonumber(propKeyValues["fademindist"] or 0.), -- float
+							FadeMaxDist = tonumber(propKeyValues["fademaxdist"] or 0.), -- float
+							LightingOrigin = Vector(propKeyValues["lightingorigin~"]), -- Vector
+							ForcedFadeScale = tonumber(propKeyValues["fadescale"] or 0.), -- float
+							MinDXLevel = tonumber(propKeyValues["mindxlevel"] or 0), -- unsigned short
+							-- Bug "maxdxlevel" https://github.com/Facepunch/garrysmod-issues/issues/4400
+							MaxDXLevel = tonumber(propKeyValues["maxdxlevel"] or propKeyValues["MaxDxLevel"] or 0), -- unsigned short
+							MinCPULevel = tonumber(propKeyValues["mincpulevel"] or 0), -- unsigned char
+							MaxCPULevel = tonumber(propKeyValues["maxcpulevel"] or 255), -- unsigned char
+							MinGPULevel = tonumber(propKeyValues["mingpulevel"] or 0), -- unsigned char
+							MaxGPULevel = tonumber(propKeyValues["maxgpulevel"] or 255), -- unsigned char
+							DiffuseModulation = ColorFromText(propKeyValues["rendercolor"] or "255 255 255 255"), -- color32
+							DisableX360 = tonumber(propKeyValues["DisableX360"] or 0), -- bool
+							FlagsEx = tonumber(propKeyValues["FlagsEx"] or 0), -- unsigned int
+							UniformScale = tonumber(propKeyValues["modelscale"] or 1.), -- float
+						}
+						if staticPropLump.FirstLeaf >= leafEntries then
+							error("Wrong value: FirstLeaf = " .. staticPropLump.FirstLeaf .. " out-of-range in prop_static #" .. i)
+						end
+						if staticPropLump.FirstLeaf + staticPropLump.LeafCount - 1 >= leafEntries then
+							error("Wrong value: {FirstLeaf = " .. staticPropLump.FirstLeaf .. ", LeafCount = " .. staticPropLump.LeafCount .. "} out-of-range in prop_static #" .. i)
+						end
+						staticPropLumps[#staticPropLumps + 1] = staticPropLump
+					else
+						staticPropLumps[#staticPropLumps + 1] = false -- to preserve indexes
+					end
+				end
+				
+				local payloadPieces = {}
+				
+				-- Making StaticPropDictLump_t:
+				payloadPieces[#payloadPieces + 1] = int32_to_data(#staticPropDictLump)
+				for i = 1, #staticPropDictLump do
+					local model = staticPropDictLump[i]
+					payloadPieces[#payloadPieces + 1] = model
+					payloadPieces[#payloadPieces + 1] = string_rep("\0", 128 - #model)
+				end
+				
+				-- Making StaticPropLeafLump_t:
+				payloadPieces[#payloadPieces + 1] = int32_to_data(leafEntries)
+				for i = 1, leafEntries do
+					payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLeafLump[i])
+				end
+				
+				-- Making StaticPropLump_t's:
+				payloadPieces[#payloadPieces + 1] = int32_to_data(#staticPropLumps)
+				for i = 1, #staticPropLumps do
+					local staticPropLump = staticPropLumps[i]
+					if staticPropLump then
+						-- Data here must absolutely be the same as in getStaticPropsList().
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, staticPropLump.Origin) -- Vector
+						payloadPieces[#payloadPieces + 1] = QAngle_to_data(self, staticPropLump.Angles) -- QAngle
+						payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLump.PropType) -- unsigned short
+						payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLump.FirstLeaf) -- unsigned short
+						payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLump.LeafCount) -- unsigned short
+						payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.Solid) -- unsigned char
+						payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.Flags) -- unsigned char
+						payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.Skin) -- int
+						payloadPieces[#payloadPieces + 1] = float32_to_data(staticPropLump.FadeMinDist) -- float
+						payloadPieces[#payloadPieces + 1] = float32_to_data(staticPropLump.FadeMaxDist) -- float
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, staticPropLump.LightingOrigin) -- Vector
+						if lumpVersion >= 5 then
+							payloadPieces[#payloadPieces + 1] = float32_to_data(staticPropLump.ForcedFadeScale) -- float
+						end
+						if lumpVersion >= 6 and lumpVersion <= 7 then
+							payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLump.MinDXLevel) -- unsigned short
+							payloadPieces[#payloadPieces + 1] = int16_to_data(staticPropLump.MaxDXLevel) -- unsigned short
+						end
+						if lumpVersion >= 8 then
+							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MinCPULevel) -- unsigned char
+							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MaxCPULevel) -- unsigned char
+							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MinGPULevel) -- unsigned char
+							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MaxGPULevel) -- unsigned char
+						end
+						if lumpVersion >= 7 then
+							payloadPieces[#payloadPieces + 1] = color32_to_data(staticPropLump.DiffuseModulation) -- color32
+						end
+						if lumpVersion >= 9 and (lumpVersion <= 10 or self.bspHeader.version == 21) then
+							payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.DisableX360) -- bool
+						end
+						if lumpVersion >= 10 then
+							payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.FlagsEx) -- unsigned int
+						end
+						if lumpVersion >= 11 then
+							payloadPieces[#payloadPieces + 1] = float32_to_data(staticPropLump.UniformScale) -- float
+						end
+					end
+				end
+				
+				payloadString = table.concat(payloadPieces)
 			else
 				error('Unsupported conversion from text to Game Lump "' .. tostring(idText or id) .. '"')
 			end
@@ -2163,7 +2413,11 @@ BspContext = {
 				error('Unsupported conversion from text to Lump "' .. tostring(idText or id) .. '"')
 			end
 		end
-		return self:setupLumpFromHeaderlessString(isGameLump, id, payloadString)
+		local lumpInfo = self:setupLumpFromHeaderlessString(isGameLump, id, payloadString)
+		for k, v in pairs(lumpFieldsToSet) do
+			lumpInfo[k] = v
+		end
+		return lumpInfo
 	end,
 	
 	setupLumpFromTextFile = function(self, isGameLump, id, filePath)
@@ -2197,9 +2451,41 @@ BspContext = {
 		local text
 		if isGameLump then
 			if idText == "sprp" then
-				-- TODO
-				-- TODO - objet(s) supplémentaire(s) avec méta-informations
-				error('Not supported yet: Game Lump "sprp"')
+				local string_format = string.format
+				local textLines = {}
+				
+				-- Lump info:
+				textLines[#textLines + 1] = [[{]]
+				local lumpInfo = self:_getLump(true, getLumpIdFromLumpName("sprp"), fromDst)
+				local lumpVersion = lumpInfo.version
+				textLines[#textLines + 1] = string_format('"version" "%u"', lumpInfo.version)
+				textLines[#textLines + 1] = string_format('"flags" "%u"', lumpInfo.flags)
+				textLines[#textLines + 1] = [[}]]
+				
+				-- Leaves dictionary:
+				local staticPropsKeyValues, staticPropLeafLump = self:getStaticPropsList(fromDst)
+				textLines[#textLines + 1] = [[{]]
+				for leafLocal, leafGlobal in ipairs(staticPropLeafLump) do
+					textLines[#textLines + 1] = string_format('"%u" "%u"', leafLocal, leafGlobal)
+				end
+				textLines[#textLines + 1] = [[}]]
+				
+				-- Static props:
+				for i, propKeyValues in ipairs(staticPropsKeyValues) do
+					textLines[#textLines + 1] = [[{]]
+					textLines[#textLines + 1] = [["classname" "prop_static"]]
+					for _, key in ipairs(staticPropsKeyValuesOrder) do
+						local value = propKeyValues[key]
+						if value ~= nil then
+							textLines[#textLines + 1] = string_format('%s %s', anyToKeyValueString(key), anyToKeyValueString(value))
+						end
+					end
+					textLines[#textLines + 1] = [[}]]
+				end
+				
+				-- Finish:
+				textLines[#textLines + 1] = [[]] -- empty line
+				text = table.concat(textLines, "\x0A")
 			else
 				error('Unsupported conversion to text from Game Lump "' .. tostring(idText or id) .. '"')
 			end
@@ -2234,7 +2520,6 @@ BspContext = {
 	end,
 	
 	getStaticPropsList = function(self, fromDst)
-		error("Under construction")
 		local string_find = string.find
 		local data_to_integer = self.data_to_integer
 		local data_to_float32 = self.data_to_float32
@@ -2245,7 +2530,7 @@ BspContext = {
 		local payload = lumpInfo and lumpInfo.payload or nil
 		if payload == nil then
 			print("No sprp game lump: no prop_static's in the map!")
-			return {}
+			return {}, {}, {}, {}
 		end
 		local lumpStream = BytesIO:new(payload:readAll(), "rb") -- TODO - can be optimized by reading in-place
 		
@@ -2307,13 +2592,17 @@ BspContext = {
 			if lumpVersion >= 7 then
 				staticPropLump.DiffuseModulation = decode_color32(lumpStream) -- color32
 			end
-			if lumpVersion >= 9 and lumpVersion <= 10 then
+			if lumpVersion >= 9 and (lumpVersion <= 10 or self.bspHeader.version == 21) then
+				-- Wrong documentation: seems to be still there with CS:GO version 11 (de_shortnuke)
 				staticPropLump.DisableX360 = data_to_integer(lumpStream:Read(4)) -- bool
 			end
 			if lumpVersion >= 10 then
+				-- Example: CS:GO (map v21) cs_agency, de_shortdust
+				-- Wrong documentation: invalid with TF2 version 10 (map v20) (ctf_hellfire, koth_lazarus) (excess of 4 bytes)
 				staticPropLump.FlagsEx = data_to_integer(lumpStream:Read(4)) -- unsigned int
 			end
 			if lumpVersion >= 11 then
+				-- Example: CS:GO de_shortnuke
 				staticPropLump.UniformScale = data_to_float32(lumpStream:Read(4)) -- float
 			end
 			staticPropLumps[#staticPropLumps + 1] = staticPropLump
@@ -2321,16 +2610,17 @@ BspContext = {
 		
 		-- Transform staticPropLumps into the same, but with translated fields (identical to prop_dynamic keyvalues):
 		local staticPropsKeyValues = {}
-		for i, propInfo in staticPropLumps do
+		for i, propInfo in ipairs(staticPropLumps) do
 			local propKeyValues = {}
 			for key, value in pairs(propInfo) do
-				-- TODO - vérifier keyvalues dans Garry's Mod
+				-- The keys belong to both prop_static's and prop_dynamic's.
+				-- The keys are listed in FGDs and the wiki.
 				if key == "Origin" then
 					propKeyValues["origin"] = value
 				elseif key == "Angles" then
 					propKeyValues["angles"] = value
 				elseif key == "PropType" then
-					propKeyValues["model"] = dictEntries[value]
+					propKeyValues["model"] = staticPropDictLump[value]
 				elseif key == "Solid" then
 					propKeyValues["solid"] = value
 				elseif key == "Flags" then
@@ -2342,7 +2632,8 @@ BspContext = {
 				elseif key == "FadeMaxDist" then
 					propKeyValues["fademaxdist"] = value
 				elseif key == "LightingOrigin" then
-					propKeyValues["lightingorigin"] = value -- TODO - vérifier dans la partie, normalement targetname
+					-- Vector in StaticPropLump_t but targetname in the game: renamed
+					propKeyValues["lightingorigin~"] = value
 				elseif key == "ForcedFadeScale" then
 					propKeyValues["fadescale"] = value
 				elseif key == "MinDXLevel" then
@@ -2368,7 +2659,7 @@ BspContext = {
 			staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
 		end
 		
-		return staticPropsKeyValues, staticPropLumps, staticPropDictLump, staticPropLeafLump
+		return staticPropsKeyValues, staticPropLeafLump, staticPropLumps, staticPropDictLump
 	end,
 	
 	getMaterialsList = function(self, fromDst)
@@ -2405,11 +2696,25 @@ BspContext = {
 		return materials
 	end,
 	
+	_explodeEntitiesText = function(cls, lumpContent, posStart) -- static method
+		-- Explode a text following the LUMP_ENTITIES format
+		
+		local string_find = string.find
+		local entitiesText = {}
+		posStart = posStart or 1
+		local posEnd, entityText = nil, nil
+		repeat
+			posStart, posEnd, entityText = string_find(lumpContent, "^({\x0A.-\x0A}\x0A)", posStart)
+			entitiesText[#entitiesText + 1] = entityText
+			posStart = (posEnd or -1) + 1
+		until not posEnd
+		return entitiesText
+	end,
+	
 	moveEntitiesToLua = function(self)
 		-- Move the content of the LUMP_ENTITIES into a lua/autorun/server/ script
 		
 		local ipairs = ipairs
-		local string_find = string.find
 		local string_sub = string.sub
 		local util_KeyValuesToTablePreserveOrder = util.KeyValuesToTablePreserveOrder
 		local hook_Run = hook.Run
@@ -2417,15 +2722,7 @@ BspContext = {
 		local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, true)
 		local mapInfo = self:getInfoMap()
 		local mapTitle = mapInfo.title
-		local entitiesText = {}
-		do
-			local posStart, posEnd, entityText = 1, nil, nil
-			repeat
-				posStart, posEnd, entityText = string_find(lumpContent, "^({\x0A.-\x0A}\x0A)", posStart)
-				entitiesText[#entitiesText + 1] = entityText
-				posStart = (posEnd or -1) + 1
-			until not posEnd
-		end
+		local entitiesText = self:_explodeEntitiesText(lumpContent)
 		
 		-- local presentClassNames = {}
 		-- local presentClassNamesNoModel = {}
@@ -2780,6 +3077,49 @@ BspContext = {
 		
 		self.entitiesTextLua = table.concat(entitiesTextLua, "\n")
 		self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, table.concat(entitiesTextKeptInLump))
+	end,
+	
+	getLastHammerid_ = function(cls, entitiesText) -- static method
+		local lastHammerid = 0
+		for hammerid in string.gmatch(entitiesText, '\x0A[%s]*"hammerid"[%s]+"([0-9]+)"[%s]*\x0A') do
+			hammerid = tonumber(hammerid)
+			lastHammerid = (hammerid > lastHammerid) and hammerid or lastHammerid
+		end
+		return lastHammerid
+	end,
+	
+	getLastHammerid = function(self, fromDst)
+		local entitiesText = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
+		return self:getLastHammerid_(entitiesText)
+	end,
+	
+	convertStaticPropsToDynamic = function(self, fromDst)
+		-- Convert all prop_static's to prop_dynamic's
+		local string_format = string.format
+		
+		local entitiesText = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
+		local staticPropsKeyValues = self:getStaticPropsList(fromDst)
+		local extraTextLines = {}
+		local hammerid = self:getLastHammerid_(entitiesText)
+		for i, propKeyValues in ipairs(staticPropsKeyValues) do
+			extraTextLines[#extraTextLines + 1] = [[{]]
+			extraTextLines[#extraTextLines + 1] = [["classname" "prop_dynamic"]]
+			hammerid = hammerid + 1
+			extraTextLines[#extraTextLines + 1] = string_format('"hammerid" "%u"', hammerid)
+			for _, key in ipairs(staticPropsKeyValuesOrder) do
+				if staticPropsToDynamicKeyValues[key] then
+					local value = propKeyValues[key]
+					if value ~= nil then
+						extraTextLines[#extraTextLines + 1] = string_format('%s %s', anyToKeyValueString(key), anyToKeyValueString(value))
+					end
+				end
+			end
+			extraTextLines[#extraTextLines + 1] = [[}]]
+		end
+		extraTextLines[#extraTextLines + 1] = [[]] -- empty line
+		entitiesText = table.concat({entitiesText, table.concat(extraTextLines, "\x0A")})
+		self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, entitiesText)
+		self:clearLump(true, getLumpIdFromLumpName("sprp"))
 	end,
 	
 	_closeOldLumpStream = function(self, lumpInfoOld)

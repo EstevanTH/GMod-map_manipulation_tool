@@ -811,8 +811,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		btnPropsStaticToDynamic:SetPos(X_COL_2_3, y)
 		btnPropsStaticToDynamic:SetSize(WIDTH_2_3, BUTTON_HEIGHT)
 		btnPropsStaticToDynamic:SetText("Convert all prop_static's to prop_dynamic's")
-		btnPropsStaticToDynamic:SetEnabled(false)
-		-- TODO - refreshLumpsList()
+		btnPropsStaticToDynamic.DoClick = function(self)
+			context:convertStaticPropsToDynamic(true)
+			refreshLumpsList()
+		end
 	end
 	
 	local btnHdrRemove = vgui.Create("DButton", assistant); do
