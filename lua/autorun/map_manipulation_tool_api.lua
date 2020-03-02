@@ -357,8 +357,25 @@ do
 		return Color(string_byte(from, 1, 4))
 	end
 	
-	function ColorFromText(text)
-		local r, g, b, a = string.match(text, "^%s*([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])")
+	function ColorFromText(rendercolor, renderamt)
+		local r, g, b, a
+		if rendercolor then
+			do
+				r, g, b, a = string.match(rendercolor, "^%s*([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])")
+			end
+			if not r then
+				r, g, b = string.match(rendercolor, "^%s*([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])%s+([1-2]?[0-9]?[0-9])")
+			end
+		end
+		if not r then
+			r, g, b = 255, 255, 255
+		end
+		if renderamt then
+			a = renderamt
+		end
+		if not a then
+			a = 255
+		end
 		return Color(tonumber(r), tonumber(g), tonumber(b), tonumber(a))
 	end
 	
@@ -887,6 +904,7 @@ local staticPropsKeyValuesOrder = {
 	"mingpulevel",
 	"maxgpulevel",
 	"rendercolor",
+	"renderamt",
 	"DisableX360",
 	"FlagsEx",
 	"modelscale",
@@ -910,6 +928,7 @@ local staticPropsToDynamicKeyValues = {
 	["mingpulevel"] = true,
 	["maxgpulevel"] = true,
 	["rendercolor"] = true,
+	["renderamt"] = true,
 	["modelscale"] = true,
 }
 
@@ -2215,6 +2234,7 @@ BspContext = {
 				local string_rep = string.rep
 				local tonumber = tonumber
 				local util_KeyValuesToTable = util.KeyValuesToTable
+				local bit_band = bit.band
 				local string_char = string.char
 				local int16_to_data = self.int16_to_data
 				local int32_to_data = self.int32_to_data
@@ -2231,6 +2251,7 @@ BspContext = {
 				
 				local staticPropLeafLump = util.KeyValuesToTablePreserveOrder('"StaticPropLeafLump_t"\x0A' .. entitiesText[2], false, true)
 				for i, leafPair in ipairs(staticPropLeafLump) do
+					-- This ignores the key of the keyvalue (safer).
 					staticPropLeafLump[i] = tonumber(leafPair.Value)
 				end
 				local leafEntries = #staticPropLeafLump
@@ -2266,15 +2287,17 @@ BspContext = {
 				for i = 1, #staticPropsKeyValues do
 					local propKeyValues = staticPropsKeyValues[i]
 					if propKeyValues then
+						local FirstLeaf = tonumber(propKeyValues["FirstLeaf"] or 0)
 						local staticPropLump = {
 							-- Default value included for every StaticPropLump_t field
 							Origin = Vector(propKeyValues["origin"]), -- Vector
 							Angles = Angle(propKeyValues["angles"]), -- QAngle
 							PropType = modelIndexes[propKeyValues["model"]], -- unsigned short
-							FirstLeaf = tonumber(propKeyValues["FirstLeaf"] or 0), -- unsigned short
-							LeafCount = tonumber(propKeyValues["LeafCount"] or 0), -- unsigned short
-							Solid = tonumber(propKeyValues["solid"] or 0), -- unsigned char
-							Flags = tonumber(propKeyValues["spawnflags"] or 0), -- unsigned char
+							-- Deal with leaves the best we can:
+							FirstLeaf = FirstLeaf, -- unsigned short
+							LeafCount = tonumber(propKeyValues["LeafCount"] or (leafEntries - FirstLeaf)), -- unsigned short
+							Solid = tonumber(propKeyValues["solid"] or 6), -- unsigned char
+							Flags = bit_band(tonumber(propKeyValues["spawnflags"] or 0), 0xFF), -- unsigned char
 							Skin = tonumber(propKeyValues["skin"] or 0), -- int
 							FadeMinDist = tonumber(propKeyValues["fademindist"] or 0.), -- float
 							FadeMaxDist = tonumber(propKeyValues["fademaxdist"] or 0.), -- float
@@ -2287,7 +2310,7 @@ BspContext = {
 							MaxCPULevel = tonumber(propKeyValues["maxcpulevel"] or 255), -- unsigned char
 							MinGPULevel = tonumber(propKeyValues["mingpulevel"] or 0), -- unsigned char
 							MaxGPULevel = tonumber(propKeyValues["maxgpulevel"] or 255), -- unsigned char
-							DiffuseModulation = ColorFromText(propKeyValues["rendercolor"] or "255 255 255 255"), -- color32
+							DiffuseModulation = ColorFromText(propKeyValues["rendercolor"], propKeyValues["renderamt"]), -- color32
 							DisableX360 = tonumber(propKeyValues["DisableX360"] or 0), -- bool
 							FlagsEx = tonumber(propKeyValues["FlagsEx"] or 0), -- unsigned int
 							UniformScale = tonumber(propKeyValues["modelscale"] or 1.), -- float
@@ -2466,7 +2489,7 @@ BspContext = {
 				local staticPropsKeyValues, staticPropLeafLump = self:getStaticPropsList(fromDst)
 				textLines[#textLines + 1] = [[{]]
 				for leafLocal, leafGlobal in ipairs(staticPropLeafLump) do
-					textLines[#textLines + 1] = string_format('"%u" "%u"', leafLocal, leafGlobal)
+					textLines[#textLines + 1] = string_format('"%u" "%u"', (leafLocal - 1), leafGlobal)
 				end
 				textLines[#textLines + 1] = [[}]]
 				
@@ -2524,6 +2547,7 @@ BspContext = {
 		local data_to_integer = self.data_to_integer
 		local data_to_float32 = self.data_to_float32
 		local pairs = pairs
+		local string_format = string.format
 		
 		local lumpInfo = self:_getLump(true, getLumpIdFromLumpName("sprp"), fromDst)
 		local lumpVersion = lumpInfo.version
@@ -2649,7 +2673,8 @@ BspContext = {
 				elseif key == "MaxGPULevel" then
 					propKeyValues["maxgpulevel"] = value
 				elseif key == "DiffuseModulation" then
-					propKeyValues["rendercolor"] = value
+					propKeyValues["rendercolor"] = string_format("%u %u %u", value.r, value.g, value.b)
+					propKeyValues["renderamt"] = value.a
 				elseif key == "UniformScale" then
 					propKeyValues["modelscale"] = value
 				else
