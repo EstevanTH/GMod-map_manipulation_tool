@@ -732,6 +732,23 @@ do
 	end
 end
 
+--[[
+local dictionaryKeysToLowerCase
+do
+	-- Return a copy of dictionary with keys converted to lowercase
+	-- Bug "maxdxlevel", "Flags" https://github.com/Facepunch/garrysmod-issues/issues/4400
+	local string_lower = string.lower
+	function dictionaryKeysToLowerCase(dictionary)
+		local dictionary_ = {}
+		for k, v in pairs(dictionary_) do
+			dictionary_[string_lower(k)] = v
+		end
+		return dictionary_
+	end
+end
+-- Solution: preserveKeyCase = false
+]]
+
 
 --- Entities ---
 
@@ -866,6 +883,7 @@ local entityClassesAvoidLua = {
 }
 
 local entityKeyValuesNotInLua = {
+	-- Keys are lowercase.
 	["classname"] = true,
 	["parentname"] = true,
 }
@@ -885,13 +903,14 @@ local staticPropsKeyValuesOrder = {
 	-- Order in which to list keyvalues & properties for prop_static's
 	-- Look at BspContext.extractLumpAsText() and StaticPropLump_t.
 	-- Every field from StaticPropLump_t should be listed here!
+	-- Keys are case-sensitive.
 	"origin",
 	"angles",
 	"model",
 	"FirstLeaf",
 	"LeafCount",
 	"solid",
-	"spawnflags",
+	"Flags",
 	"skin",
 	"fademindist",
 	"fademaxdist",
@@ -905,18 +924,18 @@ local staticPropsKeyValuesOrder = {
 	"maxgpulevel",
 	"rendercolor",
 	"renderamt",
-	"DisableX360",
+	"disableX360",
 	"FlagsEx",
 	"modelscale",
 }
 
 local staticPropsToDynamicKeyValues = {
 	-- Keyvalues that are maintained when transforming a prop_static into a prop_dynamic
+	-- Keys are case-sensitive.
 	["origin"] = true,
 	["angles"] = true,
 	["model"] = true,
 	["solid"] = true,
-	["spawnflags"] = true,
 	["skin"] = true,
 	["fademindist"] = true,
 	["fademaxdist"] = true,
@@ -929,6 +948,7 @@ local staticPropsToDynamicKeyValues = {
 	["maxgpulevel"] = true,
 	["rendercolor"] = true,
 	["renderamt"] = true,
+	["disableX360"] = true,
 	["modelscale"] = true,
 }
 
@@ -2229,7 +2249,7 @@ BspContext = {
 		local lumpFieldsToSet = {}
 		if isGameLump then
 			if idText == "sprp" then
-				-- Warning: keys are case-sentitive!
+				-- Warning: keyvalue keys are all lower-case here!
 				-- TODO - comprendre les physiques BBox
 				local string_rep = string.rep
 				local tonumber = tonumber
@@ -2261,7 +2281,7 @@ BspContext = {
 				local staticPropsKeyValues = {}
 				for i = 3, #entitiesText do
 					local entityText = entitiesText[i]
-					local propKeyValues = util_KeyValuesToTable('"prop_static #' .. (i - 2) .. '"\x0A' .. entityText, false, true)
+					local propKeyValues = util_KeyValuesToTable('"prop_static #' .. (i - 2) .. '"\x0A' .. entityText, false, false)
 					if propKeyValues then
 						staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
 						local model = propKeyValues["model"]
@@ -2287,7 +2307,7 @@ BspContext = {
 				for i = 1, #staticPropsKeyValues do
 					local propKeyValues = staticPropsKeyValues[i]
 					if propKeyValues then
-						local FirstLeaf = tonumber(propKeyValues["FirstLeaf"] or 0)
+						local FirstLeaf = tonumber(propKeyValues["firstleaf"] or 0)
 						local staticPropLump = {
 							-- Default value included for every StaticPropLump_t field
 							Origin = Vector(propKeyValues["origin"]), -- Vector
@@ -2295,24 +2315,23 @@ BspContext = {
 							PropType = modelIndexes[propKeyValues["model"]], -- unsigned short
 							-- Deal with leaves the best we can:
 							FirstLeaf = FirstLeaf, -- unsigned short
-							LeafCount = tonumber(propKeyValues["LeafCount"] or (leafEntries - FirstLeaf)), -- unsigned short
+							LeafCount = tonumber(propKeyValues["leafcount"] or (leafEntries - FirstLeaf)), -- unsigned short
 							Solid = tonumber(propKeyValues["solid"] or 6), -- unsigned char
-							Flags = bit_band(tonumber(propKeyValues["spawnflags"] or 0), 0xFF), -- unsigned char
+							Flags = bit_band(tonumber(propKeyValues["flags"] or 0), 0xFF), -- unsigned char
 							Skin = tonumber(propKeyValues["skin"] or 0), -- int
 							FadeMinDist = tonumber(propKeyValues["fademindist"] or 0.), -- float
 							FadeMaxDist = tonumber(propKeyValues["fademaxdist"] or 0.), -- float
 							LightingOrigin = Vector(propKeyValues["lightingorigin~"]), -- Vector
 							ForcedFadeScale = tonumber(propKeyValues["fadescale"] or 0.), -- float
 							MinDXLevel = tonumber(propKeyValues["mindxlevel"] or 0), -- unsigned short
-							-- Bug "maxdxlevel" https://github.com/Facepunch/garrysmod-issues/issues/4400
-							MaxDXLevel = tonumber(propKeyValues["maxdxlevel"] or propKeyValues["MaxDxLevel"] or 0), -- unsigned short
+							MaxDXLevel = tonumber(propKeyValues["maxdxlevel"] or 0), -- unsigned short
 							MinCPULevel = tonumber(propKeyValues["mincpulevel"] or 0), -- unsigned char
 							MaxCPULevel = tonumber(propKeyValues["maxcpulevel"] or 255), -- unsigned char
 							MinGPULevel = tonumber(propKeyValues["mingpulevel"] or 0), -- unsigned char
 							MaxGPULevel = tonumber(propKeyValues["maxgpulevel"] or 255), -- unsigned char
 							DiffuseModulation = ColorFromText(propKeyValues["rendercolor"], propKeyValues["renderamt"]), -- color32
-							DisableX360 = tonumber(propKeyValues["DisableX360"] or 0), -- bool
-							FlagsEx = tonumber(propKeyValues["FlagsEx"] or 0), -- unsigned int
+							DisableX360 = tonumber(propKeyValues["disablex360"] or 0), -- bool
+							FlagsEx = tonumber(propKeyValues["flagsex"] or 0), -- unsigned int
 							UniformScale = tonumber(propKeyValues["modelscale"] or 1.), -- float
 						}
 						if staticPropLump.FirstLeaf >= leafEntries then
@@ -2647,8 +2666,6 @@ BspContext = {
 					propKeyValues["model"] = staticPropDictLump[value]
 				elseif key == "Solid" then
 					propKeyValues["solid"] = value
-				elseif key == "Flags" then
-					propKeyValues["spawnflags"] = value
 				elseif key == "Skin" then
 					propKeyValues["skin"] = value
 				elseif key == "FadeMinDist" then
@@ -2675,6 +2692,8 @@ BspContext = {
 				elseif key == "DiffuseModulation" then
 					propKeyValues["rendercolor"] = string_format("%u %u %u", value.r, value.g, value.b)
 					propKeyValues["renderamt"] = value.a
+				elseif key == "DisableX360" then
+					propKeyValues["disableX360"] = value
 				elseif key == "UniformScale" then
 					propKeyValues["modelscale"] = value
 				else
@@ -2744,6 +2763,7 @@ BspContext = {
 		local util_KeyValuesToTablePreserveOrder = util.KeyValuesToTablePreserveOrder
 		local hook_Run = hook.Run
 		local table_remove = table.remove
+		local string_lower = string.lower
 		local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, true)
 		local mapInfo = self:getInfoMap()
 		local mapTitle = mapInfo.title
@@ -2839,7 +2859,7 @@ BspContext = {
 			if entityKeyValues and #entityKeyValues ~= 0 then
 				for j = #entityKeyValues, 1, -1 do
 					local keyValue = entityKeyValues[j]
-					local key = keyValue.Key
+					local key = string_lower(keyValue.Key)
 					local value = keyValue.Value
 					if key == "classname" then
 						classname = value
@@ -2858,14 +2878,12 @@ BspContext = {
 					elseif key == "parentname" then
 						entityIndexesToParentname[i] = value
 						targetnamesWithChildren[value] = true
-					end
-				end
-				if classname == "point_template" then
-					-- point_template's must exclude from Lua the entities they refer to.
-					for j = #entityKeyValues, 1, -1 do
-						local keyValue = entityKeyValues[j]
-						if string_sub(keyValue.Key, 1, 8) == "Template" then
-							targetnamesAsTemplates[keyValue.Value] = true
+					else
+						if classname == "point_template" then
+							-- point_template's must exclude from Lua the entities they refer to.
+							if string_sub(key, 1, 8) == "template" then
+								targetnamesAsTemplates[value] = true
+							end
 						end
 					end
 				end
@@ -2958,10 +2976,11 @@ BspContext = {
 				for j = 1, #entityKeyValues do
 					local keyValue = entityKeyValues[j]
 					local key = keyValue.Key
-					if not entityKeyValuesNotInLua[key] then
+					local keyLower = string_lower(key)
+					if not entityKeyValuesNotInLua[keyLower] then
 						local value = keyValue.Value
 						entitiesTextLua[#entitiesTextLua + 1] = [[			ent_SetKeyValue( ent, ]] .. stringToLuaString(key) .. [[, ]] .. stringToLuaString(value) .. [[ )]]
-						if key == "hammerid" then
+						if keyLower == "hammerid" then
 							-- Using the hammerid variable because it is a number.
 							entitiesTextLua[#entitiesTextLua + 1] = [[			entityToHammerid[ent] = ]] .. hammerid
 							entitiesTextLua[#entitiesTextLua + 1] = [[			hammeridToEntity[]] .. hammerid .. [[] = ent]]
