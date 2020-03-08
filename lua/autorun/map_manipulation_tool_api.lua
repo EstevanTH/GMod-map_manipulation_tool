@@ -39,6 +39,10 @@ FULL_ZERO_BUFFER = nil -- BUFFER_LENGTH of null data, set only on 1st API use
 local WEAK_KEYS = {__mode = "k"}
 local WEAK_VALUES = {__mode = "v"}
 
+-- lump_t variants:
+local LUMP_T_USUAL = nil -- usual
+local LUMP_T_L4D2 = 1 -- Left 4 Dead 2 / Contagion
+
 
 --- Utility ---
 
@@ -1432,10 +1436,17 @@ lump_t = BaseDataStructure:newClass({
 		
 		if streamSrc ~= nil then
 			if not _noReadInherit then
-				instance.fileofs = context.data_to_integer(streamSrc:Read(4))
-				instance.filelen = context.data_to_integer(streamSrc:Read(4))
-				instance.version = context.data_to_integer(streamSrc:Read(4))
-				instance.fourCC = context.data_to_integer(streamSrc:Read(4))
+				if context.specific_lump_t == LUMP_T_L4D2 then
+					instance.version = context.data_to_integer(streamSrc:Read(4))
+					instance.fileofs = context.data_to_integer(streamSrc:Read(4))
+					instance.filelen = context.data_to_integer(streamSrc:Read(4))
+					instance.fourCC = context.data_to_integer(streamSrc:Read(4))
+				else
+					instance.fileofs = context.data_to_integer(streamSrc:Read(4))
+					instance.filelen = context.data_to_integer(streamSrc:Read(4))
+					instance.version = context.data_to_integer(streamSrc:Read(4))
+					instance.fourCC = context.data_to_integer(streamSrc:Read(4))
+				end
 				local lumpIsUsed = (
 					instance.fileofs ~= 0 and
 					instance.filelen ~= 0
@@ -1503,10 +1514,17 @@ lump_t = BaseDataStructure:newClass({
 	end,
 	
 	writeTo = function(self, streamDst)
-		streamDst:Write(self.context.int32_to_data(self.fileofs))
-		streamDst:Write(self.context.int32_to_data(self.filelen))
-		streamDst:Write(self.context.int32_to_data(self.version))
-		streamDst:Write(self.context.int32_to_data(self.fourCC))
+		if context.specific_lump_t == LUMP_T_L4D2 then
+			streamDst:Write(self.context.int32_to_data(self.version))
+			streamDst:Write(self.context.int32_to_data(self.fileofs))
+			streamDst:Write(self.context.int32_to_data(self.filelen))
+			streamDst:Write(self.context.int32_to_data(self.fourCC))
+		else
+			streamDst:Write(self.context.int32_to_data(self.fileofs))
+			streamDst:Write(self.context.int32_to_data(self.filelen))
+			streamDst:Write(self.context.int32_to_data(self.version))
+			streamDst:Write(self.context.int32_to_data(self.fourCC))
+		end
 	end,
 })
 lump_t.__index = lump_t
@@ -1645,15 +1663,37 @@ local dheader_t = BaseDataStructure:newClass({
 			
 			instance.ident = ident
 			instance.version = context.data_to_integer(streamSrc:Read(4))
-			instance.lumps = {}
-			for i = 1, HEADER_LUMPS do
-				-- local cursorBefore = streamSrc:Tell()
-				table.insert(instance.lumps, lump_t:new(context, streamSrc))
-				-- local readBytes = streamSrc:Tell() - cursorBefore
-				-- if readBytes ~= 16 then
-					-- error("Read " .. tostring(readBytes) .. " bytes in lump_t instead of 16")
-				-- end
+			local lumps = {}
+			do
+				-- Parsing lump_t's as usual ones:
+				context.specific_lump_t = LUMP_T_USUAL
+				local startOfLumpsArray = streamSrc:Tell()
+				for i = 1, HEADER_LUMPS do
+					lumps[i] = lump_t:new(context, streamSrc)
+				end
+				-- Detecting if lump_t's seem to be L4D2's ones:
+				local probabilityL4D2 = 0
+				for i = 1, #lumps do
+					local lumpInfo = lumps[i]
+					if lumpInfo.filelen == 0 then
+						-- nothing
+					elseif lumpInfo.fileofs > lumpInfo.filelen then
+						probabilityL4D2 = probabilityL4D2 - 1
+					else
+						probabilityL4D2 = probabilityL4D2 + 1
+					end
+				end
+				-- Parsing lump_t's as L4D2 ones if needed:
+				if probabilityL4D2 > 0 then
+					print("This map seems to use Left 4 Dead 2's lump_t.")
+					context.specific_lump_t = LUMP_T_L4D2
+					streamSrc:Seek(startOfLumpsArray)
+					for i = 1, HEADER_LUMPS do
+						lumps[i] = lump_t:new(context, streamSrc)
+					end
+				end
 			end
+			instance.lumps = lumps
 			instance.mapRevision = context.data_to_integer(streamSrc:Read(4))
 		elseif other ~= nil and lumps then
 			if lumps == nil then
@@ -1735,6 +1775,8 @@ BspContext = {
 	gameLumpsDst = nil, -- list of dgamelump_t objects selected for the destination map file
 	lumpIndexesToCompress = nil, -- nil / false / true; setting for LUMP_GAME_LUMP is common for all game lumps
 	entitiesTextLua = nil, -- exported entities to Lua script
+	
+	specific_lump_t = LUMP_T_USUAL,
 	
 	-- to be set upon .bsp load
 	data_to_integer = nil, -- instance's function
