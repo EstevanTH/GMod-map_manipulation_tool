@@ -749,6 +749,33 @@ end
 -- Solution: preserveKeyCase = false
 ]]
 
+local keyValuesIntoStringValues
+do
+	-- Set all values as strings in a keyvalues table
+	-- This alters the given table.
+	-- This is useful because values may be strings as well as numbers.
+	local istable = istable
+	local next = next
+	local pairs = pairs
+	local tostring = tostring
+	function keyValuesIntoStringValues(keyValues)
+		local firstEntryValue = ({next(keyValues)})[2]
+		if istable(firstEntryValue) and firstEntryValue.Key ~= nil then
+			-- Case: table returned by util.KeyValuesToTablePreserveOrder()
+			for i = 1, #keyValues do
+				local keyValue = keyValues[i]
+				keyValue.Value = tostring(keyValue.Value)
+			end
+		else
+			-- Case: table returned by util.KeyValuesToTable() or any other sort of dictionary
+			for Key, Value in pairs(keyValues) do
+				keyValues[Key] = tostring(Value)
+			end
+		end
+		return keyValues
+	end
+end
+
 
 --- Entities ---
 
@@ -2282,6 +2309,7 @@ BspContext = {
 				for i = 3, #entitiesText do
 					local entityText = entitiesText[i]
 					local propKeyValues = util_KeyValuesToTable('"prop_static #' .. (i - 2) .. '"\x0A' .. entityText, false, false)
+					propKeyValues = keyValuesIntoStringValues(propKeyValues)
 					if propKeyValues then
 						staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
 						local model = propKeyValues["model"]
@@ -2815,6 +2843,7 @@ BspContext = {
 			[[	end]],
 			[[	local entityToHammerid = {}]],
 			[[	local hammeridToEntity = {}]],
+			[[	local noPhysgunEntities = {}]], -- entities that have "gmod_allowphysgun" = "0"
 			[[	]],
 			[[	local WEAK_KEYS = {__mode = "k"}]],
 			[[	local WEAK_VALUES = {__mode = "v"}]],
@@ -2827,6 +2856,7 @@ BspContext = {
 			[[		hammeridToEntity = setmetatable( {}, WEAK_VALUES )]],
 			[[		entityToNewMapCreationId = setmetatable( {}, WEAK_KEYS )]],
 			[[		newMapCreationIdToEntity = setmetatable( {}, WEAK_VALUES )]],
+			[[		noPhysgunEntities = setmetatable( {}, WEAK_KEYS )]],
 			[[		]],
 					-- List all in-lump entities:
 			[[		do]],
@@ -2856,6 +2886,7 @@ BspContext = {
 			local model = nil
 			-- There is a mandatory non-empty structure name, using the same identifer as in the Lua file.
 			local entityKeyValues = util_KeyValuesToTablePreserveOrder('"entities[' .. i .. ']"\x0A' .. entityText, false, true)
+			entityKeyValues = keyValuesIntoStringValues(entityKeyValues)
 			if entityKeyValues and #entityKeyValues ~= 0 then
 				for j = #entityKeyValues, 1, -1 do
 					local keyValue = entityKeyValues[j]
@@ -2984,6 +3015,11 @@ BspContext = {
 							-- Using the hammerid variable because it is a number.
 							entitiesTextLua[#entitiesTextLua + 1] = [[			entityToHammerid[ent] = ]] .. hammerid
 							entitiesTextLua[#entitiesTextLua + 1] = [[			hammeridToEntity[]] .. hammerid .. [[] = ent]]
+						elseif keyLower == "gmod_allowphysgun" then
+							-- This keyvalue actually does not exist in entities, so it has no effect outside of the LUMP_ENTITIES.
+							if value == "0" then
+								entitiesTextLua[#entitiesTextLua + 1] = [[			noPhysgunEntities[ent] = true]]
+							end
 						end
 					end
 				end
@@ -3116,6 +3152,11 @@ BspContext = {
 		entitiesTextLua[#entitiesTextLua + 1] = [[	local hookName = "map_manipulation_tool:" .. mapName]]
 		entitiesTextLua[#entitiesTextLua + 1] = [[	hook.Add( "InitPostEntity", hookName, InitPostEntity )]]
 		entitiesTextLua[#entitiesTextLua + 1] = [[	hook.Add( "PostCleanupMap", hookName, InitPostEntity )]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[	hook.Add( "PhysgunPickup", hookName, function( _, ent )]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[		if noPhysgunEntities[ent] then]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[			return false]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
+		entitiesTextLua[#entitiesTextLua + 1] = [[	end )]]
 		entitiesTextLua[#entitiesTextLua + 1] = [[end]]
 		entitiesTextLua[#entitiesTextLua + 1] = [[]]
 		
