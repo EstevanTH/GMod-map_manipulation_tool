@@ -310,6 +310,7 @@ do
 	local Vector = Vector
 	local Angle = Angle
 	local table_concat = table.concat
+	local string_format = string.format
 	
 	local function read3Float32s(context, from)
 		local data_to_float32 = context.data_to_float32
@@ -322,14 +323,17 @@ do
 	end
 	
 	function decode_Vector(context, from)
+		-- TODO - supporter Vector chelous encodés bruts
 		return Vector(read3Float32s(context, from))
 	end
 	
 	function decode_QAngle(context, from)
+		-- TODO - supporter Angle chelous encodés bruts
 		return Angle(read3Float32s(context, from))
 	end
 	
 	function Vector_to_data(context, from)
+		-- TODO - supporter Vector chelous encodés bruts
 		local pieces = {
 			context.float32_to_data(from.x),
 			context.float32_to_data(from.y),
@@ -339,12 +343,27 @@ do
 	end
 	
 	function QAngle_to_data(context, from)
+		-- TODO - supporter Angle chelous encodés bruts
 		local pieces = {
 			context.float32_to_data(from.p),
 			context.float32_to_data(from.y),
 			context.float32_to_data(from.r),
 		}
 		return table_concat(pieces)
+	end
+	
+	function Vector_to_string(from)
+		-- Very big values are truncated with Vector:__tostring()!
+		-- Note: Vector() probably handles long strings.
+		-- TODO - supporter Vector chelous encodés bruts
+		return string_format("%0.6f %0.6f %0.6f", from.x, from.y, from.z)
+	end
+	
+	function Angle_to_string(from)
+		-- Very big values are truncated with Angle:__tostring()!
+		-- Note: Angle() probably handles long strings.
+		-- TODO - supporter Angle chelous encodés bruts
+		return string_format("%0.3f %0.3f %0.3f", from.p, from.y, from.r)
 	end
 end
 
@@ -727,12 +746,21 @@ do
 	-- "maxdxlevel" -> "MaxDxLevel"
 	local string_gsub = string.gsub
 	local tostring = tostring
+	local isvector = isvector
+	local isangle = isangle
+	
 	local replacements = {
 		["\0"] = "",
 		['"'] = '\\"',
 	}
 	function anyToKeyValueString(initial)
-		return '"' .. string_gsub(tostring(initial), '.', replacements) .. '"'
+		if isvector(initial) then
+			return '"' .. Vector_to_string(initial) .. '"'
+		elseif isangle(initial) then
+			return '"' .. Angle_to_string(initial) .. '"'
+		else
+			return '"' .. string_gsub(tostring(initial), '.', replacements) .. '"'
+		end
 	end
 end
 
@@ -2392,13 +2420,13 @@ BspContext = {
 							FadeMinDist = tonumber(propKeyValues["fademindist"] or 0.), -- float
 							FadeMaxDist = tonumber(propKeyValues["fademaxdist"] or 0.), -- float
 							LightingOrigin = Vector(propKeyValues["lightingorigin~"]), -- Vector
-							ForcedFadeScale = tonumber(propKeyValues["fadescale"] or 0.), -- float
+							ForcedFadeScale = tonumber(propKeyValues["fadescale"] or 1.), -- float
 							MinDXLevel = tonumber(propKeyValues["mindxlevel"] or 0), -- unsigned short
 							MaxDXLevel = tonumber(propKeyValues["maxdxlevel"] or 0), -- unsigned short
 							MinCPULevel = tonumber(propKeyValues["mincpulevel"] or 0), -- unsigned char
-							MaxCPULevel = tonumber(propKeyValues["maxcpulevel"] or 255), -- unsigned char
+							MaxCPULevel = tonumber(propKeyValues["maxcpulevel"] or 0), -- unsigned char
 							MinGPULevel = tonumber(propKeyValues["mingpulevel"] or 0), -- unsigned char
-							MaxGPULevel = tonumber(propKeyValues["maxgpulevel"] or 255), -- unsigned char
+							MaxGPULevel = tonumber(propKeyValues["maxgpulevel"] or 0), -- unsigned char
 							DiffuseModulation = ColorFromText(propKeyValues["rendercolor"], propKeyValues["renderamt"]), -- color32
 							DisableX360 = tonumber(propKeyValues["disablex360"] or 0), -- bool
 							FlagsEx = tonumber(propKeyValues["flagsex"] or 0), -- unsigned int
@@ -2462,14 +2490,27 @@ BspContext = {
 							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MinGPULevel) -- unsigned char
 							payloadPieces[#payloadPieces + 1] = string_char(staticPropLump.MaxGPULevel) -- unsigned char
 						end
-						if lumpVersion >= 7 then
+						if lumpVersion == 10 and self.bspHeader.version == 20 then -- TF2 compatibility
+							-- nothing here
+						elseif (lumpVersion == 9  and self.bspHeader.version == 21) -- L4D2 compatibility
+						or     (lumpVersion == 10 and self.bspHeader.version == 21) then -- CS:GO compatibility
 							payloadPieces[#payloadPieces + 1] = color32_to_data(staticPropLump.DiffuseModulation) -- color32
+						else
+							if lumpVersion >= 7 then
+								payloadPieces[#payloadPieces + 1] = color32_to_data(staticPropLump.DiffuseModulation) -- color32
+							end
+							if lumpVersion >= 9 and lumpVersion <= 10 then
+								payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.DisableX360) -- bool
+							end
 						end
-						if lumpVersion >= 9 and (lumpVersion <= 10 or self.bspHeader.version == 21) then
-							payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.DisableX360) -- bool
-						end
-						if lumpVersion >= 10 then
+						if lumpVersion >= 10
+						or (lumpVersion == 9 and self.bspHeader.version == 21) then -- L4D2 compatibility
 							payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.FlagsEx) -- unsigned int
+						end
+						if (lumpVersion == 10 and self.bspHeader.version == 21) -- CS:GO compatibility
+						or (lumpVersion == 11 and self.bspHeader.version == 21) -- CS:GO compatibility
+						or (lumpVersion == 10 and self.bspHeader.version == 20) then -- TF2 compatibility
+							payloadPieces[#payloadPieces + 1] = int32_to_data(staticPropLump.DisableX360) -- bool
 						end
 						if lumpVersion >= 11 then
 							payloadPieces[#payloadPieces + 1] = float32_to_data(staticPropLump.UniformScale) -- float
@@ -2668,6 +2709,7 @@ BspContext = {
 		local staticPropLumps = {}
 		for i = 1, data_to_integer(lumpStream:Read(4)) do
 			-- The structure is based on information on the wiki as seen on 2020-01-15.
+			-- IMPORTANT !! Additions to this must be updated in staticPropsKeyValuesOrder!
 			local staticPropLump = {}
 			staticPropLump.Origin = decode_Vector(self, lumpStream) -- Vector
 			staticPropLump.Angles = decode_QAngle(self, lumpStream) -- QAngle
@@ -2702,20 +2744,35 @@ BspContext = {
 				staticPropLump.MinGPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
 				staticPropLump.MaxGPULevel = data_to_integer(lumpStream:Read(1)) -- unsigned char
 			end
-			if lumpVersion >= 7 then
+			if lumpVersion == 10 and self.bspHeader.version == 20 then -- TF2 compatibility
+				-- nothing here
+			elseif (lumpVersion == 9  and self.bspHeader.version == 21) -- L4D2 compatibility
+			or     (lumpVersion == 10 and self.bspHeader.version == 21) then -- CS:GO compatibility
 				staticPropLump.DiffuseModulation = decode_color32(lumpStream) -- color32
+			else
+				if lumpVersion >= 7 then
+					staticPropLump.DiffuseModulation = decode_color32(lumpStream) -- color32
+				end
+				if lumpVersion >= 9 and lumpVersion <= 10 then
+					staticPropLump.DisableX360 = data_to_integer(lumpStream:Read(4)) -- bool
+				end
 			end
-			if lumpVersion >= 9 and (lumpVersion <= 10 or self.bspHeader.version == 21) then
-				-- Wrong documentation: seems to be still there with CS:GO version 11 (de_shortnuke)
-				staticPropLump.DisableX360 = data_to_integer(lumpStream:Read(4)) -- bool
-			end
-			if lumpVersion >= 10 then
-				-- Example: CS:GO (map v21) cs_agency, de_shortdust
-				-- Wrong documentation: invalid with TF2 version 10 (map v20) (ctf_hellfire, koth_lazarus) (excess of 4 bytes)
+			if lumpVersion >= 10
+			or (lumpVersion == 9 and self.bspHeader.version == 21) then -- L4D2 compatibility
+				-- Example: CS:GO version 10 (map v21) (cs_agency, de_shortdust)
+				-- Wrong documentation: invalid with TF2 version 10 (map v20) (ctf_hellfire, koth_lazarus) (excess of 4 bytes + wrong layout)
 				staticPropLump.FlagsEx = data_to_integer(lumpStream:Read(4)) -- unsigned int
 			end
+			if (lumpVersion == 10 and self.bspHeader.version == 21) -- CS:GO compatibility
+			or (lumpVersion == 11 and self.bspHeader.version == 21) -- CS:GO compatibility
+			or (lumpVersion == 10 and self.bspHeader.version == 20) then -- TF2 compatibility
+				-- Wrong documentation: seems to be still there with CS:GO version 11 (map v21) (de_shortnuke)
+				-- Wrong documentation: seems to be moved here with TF2 version 10 (map v20) (ctf_hellfire, koth_lazarus)
+				-- In both cases, the actual usage is probably not bool nor "DisableX360".
+				staticPropLump.DisableX360 = data_to_integer(lumpStream:Read(4)) -- bool
+			end
 			if lumpVersion >= 11 then
-				-- Example: CS:GO de_shortnuke
+				-- Example: CS:GO version 11 (map v21) (de_shortnuke)
 				staticPropLump.UniformScale = data_to_float32(lumpStream:Read(4)) -- float
 			end
 			staticPropLumps[#staticPropLumps + 1] = staticPropLump
