@@ -4,6 +4,7 @@ local api = map_manipulation_tool_api
 local surface = surface
 
 local TITLE_BAR_THICKNESS = 24
+local SCROLL_BAR_THICKNESS = 15
 local BUTTON_HEIGHT = 24
 local MARGIN = 8
 local WIDTH = 640
@@ -302,6 +303,122 @@ do
 	}
 end
 DialogFileSelector.__index = DialogFileSelector
+
+local openEntitiesByClassRemover
+do
+	local surface = surface
+	
+	local ROW_HEIGHT = 32
+	local ROW_SPACING = 4
+	local ROW_PADDING = 4
+	local BUTTON_Y = (ROW_HEIGHT - BUTTON_HEIGHT) / 2
+	
+	local function btnRemove_DoClick(self)
+		self.context:removeEntitiesByClass(self.classname, true)
+		self.assistant.lumpsList.refreshLumpsList()
+		self.row.removed = true
+		self:SetEnabled(false)
+	end
+	local function btnWiki_DoClick(self)
+		gui.OpenURL("https://developer.valvesoftware.com/wiki/" .. self.classname)
+	end
+	local function row_Paint(self, w, h)
+		do
+			surface.SetDrawColor(223,223,223, 191)
+			surface.DrawRect(0,0, w,h)
+			if self:IsHovered() or self:IsChildHovered() then
+				surface.SetDrawColor(0,255,0, 85)
+				surface.DrawRect(0,0, w,h)
+			end
+		end
+		do
+			if self.removed then
+				surface.SetTextColor(127, 127, 127)
+			else
+				surface.SetTextColor(0, 0, 0)
+			end
+			surface.SetTextPos(4, 7)
+			surface.SetFont("Trebuchet18")
+			surface.DrawText(self.classname)
+		end
+	end
+	
+	local function makeClassRow(remover, classesList, classname)
+		local rowWidth = classesList:GetWide()
+		local row = vgui.Create("DPanel", classesList); do
+			row.Paint = row_Paint
+			row.classname = classname
+			row:SetSize(rowWidth, ROW_HEIGHT)
+		end
+		
+		local w = 180
+		local x = rowWidth - SCROLL_BAR_THICKNESS - ROW_PADDING - w
+		local btnRemove
+		if classname ~= "worldspawn" then
+			btnRemove = vgui.Create("DButton", row); do
+				btnRemove.DoClick = btnRemove_DoClick
+				btnRemove:SetSize(w, BUTTON_HEIGHT)
+				btnRemove:SetPos(x, BUTTON_Y)
+				btnRemove:SetImage("icon16/delete.png")
+				btnRemove:SetText("Remove occurrences")
+				btnRemove.row = row
+				btnRemove.assistant = remover.assistant
+				btnRemove.context = remover.context
+				btnRemove.classname = classname
+			end
+		end
+		
+		w = 160
+		x = x - ROW_PADDING - w
+		local btnWiki = vgui.Create("DButton", row); do
+			btnWiki.DoClick = btnWiki_DoClick
+			btnWiki:SetSize(w, BUTTON_HEIGHT)
+			btnWiki:SetPos(x, BUTTON_Y)
+			btnWiki:SetImage("icon16/information.png")
+			btnWiki:SetText("Open the Wiki")
+			btnWiki.classname = classname
+		end
+		
+		return row
+	end
+	
+	function openEntitiesByClassRemover(assistant)
+		local context = assistant.context
+		if IsValid(assistant.remover) then
+			assistant.remover:Remove()
+		end
+		local remover = vgui.Create("DFrame"); do
+			remover:MakePopup()
+			remover:SetKeyboardInputEnabled(false)
+			remover:SetWide(WIDTH)
+			remover:SetTitle("Remove entities by class")
+			remover.btnMinim:SetVisible(false)
+			remover.btnMaxim:SetVisible(false)
+			remover.assistant = assistant
+			remover.context = context
+			assistant.remover = remover
+		end
+		local classes = context:getPresentEntityClasses(true)
+		local classesList = vgui.Create("DScrollPanel", remover)
+		classesList:SetPos(MARGIN, TITLE_BAR_THICKNESS + MARGIN)
+		classesList:SetWide(WIDTH_1_1)
+		for i, classname in ipairs(classes) do
+			local row = makeClassRow(remover, classesList, classname)
+			row:SetPos(0, (i - 1) * (ROW_HEIGHT + ROW_SPACING))
+		end
+		
+		local x, y = classesList:GetPos()
+		classesList:SetTall(math.min(
+			(#classes * (ROW_HEIGHT + ROW_SPACING)) - ROW_SPACING,
+			ScrH() - y - MARGIN
+		))
+		remover:SetTall(y + classesList:GetTall() + MARGIN)
+		remover:Center()
+		-- TODO - comptages si disponible
+		
+		return remover
+	end
+end
 
 local makeLumpColumnHeader
 do
@@ -742,6 +859,9 @@ local function openAssistant(mapName)
 			if self.context then
 				self.context:close()
 			end
+			if IsValid(self.remover) then
+				self.remover:Remove()
+			end
 		end
 		assistant.context = context
 	end
@@ -822,7 +942,7 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		local _, y = mapDetails:GetPos()
 		y = y + mapDetails:GetTall() + MARGIN
 		btnHdrRemove:SetPos(X_COL_1, y)
-		btnHdrRemove:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
+		btnHdrRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
 		btnHdrRemove:SetText("Remove HDR")
 		btnHdrRemove.DoClick = function(self)
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING_HDR"))
@@ -835,7 +955,7 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		local x, y = btnHdrRemove:GetPos()
 		x = x + btnHdrRemove:GetWide() + MARGIN
 		btnLightingRemove:SetPos(x, y)
-		btnLightingRemove:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
+		btnLightingRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
 		btnLightingRemove:SetText("Remove Lighting")
 		btnLightingRemove.DoClick = function(self)
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING_HDR"))
@@ -844,48 +964,21 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		end
 	end
 	
-	local btnPropsStaticRemove = vgui.Create("DButton", assistant); do
-		assistant.btnPropsStaticRemove = btnPropsStaticRemove
-		local x, y = btnHdrRemove:GetPos()
-		y = y + btnHdrRemove:GetTall() + MARGIN
-		btnPropsStaticRemove:SetPos(x, y)
-		btnPropsStaticRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnPropsStaticRemove:SetText("Remove all prop_static's")
-		btnPropsStaticRemove.DoClick = function(self)
-			context:clearLump(true, api.getLumpIdFromLumpName("sprp"))
-			refreshLumpsList()
-		end
-	end
-	
-	local btnPropsDetailRemove = vgui.Create("DButton", assistant); do
-		assistant.btnPropsDetailRemove = btnPropsDetailRemove
-		local x, y = btnPropsStaticRemove:GetPos()
-		x = x + btnPropsStaticRemove:GetWide() + MARGIN
-		btnPropsDetailRemove:SetPos(x, y)
-		btnPropsDetailRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnPropsDetailRemove:SetText("Remove all prop_detail's")
-		btnPropsDetailRemove.DoClick = function(self)
-			context:clearLump(true, api.getLumpIdFromLumpName("dprp"))
-			refreshLumpsList()
-		end
-	end
-	
-	local btnOverlaysRemove = vgui.Create("DButton", assistant); do
-		assistant.btnOverlaysRemove = btnOverlaysRemove
-		local x, y = btnPropsDetailRemove:GetPos()
-		x = x + btnPropsDetailRemove:GetWide() + MARGIN
-		btnOverlaysRemove:SetPos(x, y)
-		btnOverlaysRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnOverlaysRemove:SetText("Remove all info_overlay's")
-		btnOverlaysRemove.DoClick = function(self)
-			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_OVERLAYS"))
-			refreshLumpsList()
+	local btnRemoveEntitiesByClass = vgui.Create("DButton", assistant); do
+		assistant.btnRemoveEntitiesByClass = btnRemoveEntitiesByClass
+		local x, y = btnLightingRemove:GetPos()
+		x = x + btnLightingRemove:GetWide() + MARGIN
+		btnRemoveEntitiesByClass:SetPos(x, y)
+		btnRemoveEntitiesByClass:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
+		btnRemoveEntitiesByClass:SetText("Remove entities by class")
+		btnRemoveEntitiesByClass.DoClick = function(self)
+			openEntitiesByClassRemover(assistant)
 		end
 	end
 	
 	local hdrId = makeLumpColumnHeader(assistant, "Id"); do
-		local x, y = btnPropsStaticRemove:GetPos()
-		y = y + btnPropsStaticRemove:GetTall() + MARGIN
+		local x, y = btnHdrRemove:GetPos()
+		y = y + btnHdrRemove:GetTall() + MARGIN
 		hdrId:SetPos(x, y)
 		hdrId:SetSize(LUMP_COLUMN_WIDTH_ID, LUMP_HEADER_HEIGHT_1 * 2)
 	end

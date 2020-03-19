@@ -1026,6 +1026,9 @@ local staticPropsToDynamicKeyValues = {
 	["modelscale"] = true,
 }
 
+-- Entity classes that do not belong in the LUMP_ENTITIES to {isGameLump, id}:
+local entityClassesToLumpLookup
+
 
 --- Data structures ---
 
@@ -2921,6 +2924,56 @@ BspContext = {
 		return materials
 	end,
 	
+	getPresentEntityClasses = function(self, fromDst)
+		-- Return a sorted table of present entity classes
+		-- Note: existing lumps with 0 elements will add the matching class as well.
+		
+		local string_lower = string.lower
+		local tostring = tostring
+		local util_KeyValuesToTable = util.KeyValuesToTable
+		
+		-- Inspecting the LUMP_ENTITIES:
+		local entityClasses = {}
+		do
+			local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
+			local entitiesText = self:_explodeEntitiesText(lumpContent)
+			for i = 1, #entitiesText do
+				local entityKeyValues = util_KeyValuesToTable('"entities[' .. i .. ']"\x0A' .. entitiesText[i], false, false)
+				if entityKeyValues then
+					local classname = entityKeyValues["classname"]
+					if classname ~= nil then
+						classname = string_lower(tostring(classname))
+						entityClasses[classname] = true
+					end
+				else
+					print("Could not decode the following entity description:")
+					print(entityText)
+				end
+			end
+		end
+		
+		-- Checking the presence of dedicated lumps (internal entities):
+		do
+			for classname, lumpLookup in pairs(entityClassesToLumpLookup) do
+				local lumpInfo = self:_getLump(lumpLookup[1], lumpLookup[2], fromDst)
+				if lumpInfo and lumpInfo.payload then
+					entityClasses[classname] = true
+				end
+			end
+		end
+		
+		-- Sorting the list & returning:
+		do
+			local entityClasses_ = {}
+			for classname in pairs(entityClasses) do
+				entityClasses_[#entityClasses_ + 1] = classname
+			end
+			table.sort(entityClasses_)
+			entityClasses = entityClasses_
+		end
+		return entityClasses
+	end,
+	
 	_explodeEntitiesText = function(cls, lumpContent, posStart) -- static method
 		-- Explode a text following the LUMP_ENTITIES format
 		
@@ -3317,6 +3370,60 @@ BspContext = {
 		self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, table.concat(entitiesTextKeptInLump))
 	end,
 	
+	removeEntitiesByClass = function(self, classname, fromDst)
+		-- Remove entities by classname
+		-- classname: case-insensitive classname whose entities are to remove
+		
+		local string_lower = string.lower
+		local tostring = tostring
+		local util_KeyValuesToTable = util.KeyValuesToTable
+		
+		classname = string_lower(classname)
+		do
+			-- In case there is a dedicated lump for this entity class:
+			local lumpLookup = entityClassesToLumpLookup[classname]
+			if lumpLookup then
+				local lumpInfoDst = self:_getLump(lumpLookup[1], lumpLookup[2], true)
+				if lumpInfoDst and lumpInfoDst.payload then
+					-- Removing the lump, only if it still exists in the destination:
+					self:clearLump(lumpLookup[1], lumpLookup[2])
+				end
+			end
+		end
+		
+		do
+			-- Removing occurrences from the LUMP_ENTITIES:
+			local anyRemoved = false
+			local entitiesTextKeptInLump = {}
+			local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
+			local entitiesText = self:_explodeEntitiesText(lumpContent)
+			for i = 1, #entitiesText do
+				local toKeep = true
+				local entityText = entitiesText[i]
+				local entityKeyValues = util_KeyValuesToTable('"entities[' .. i .. ']"\x0A' .. entitiesText[i], false, false)
+				if entityKeyValues then
+					local classname_ = entityKeyValues["classname"]
+					if classname_ ~= nil then
+						classname_ = string_lower(tostring(classname_))
+						if classname_ == classname then
+							toKeep = false
+							anyRemoved = true
+						end
+					end
+				else
+					print("Could not decode the following entity description:")
+					print(entityText)
+				end
+				if toKeep then
+					entitiesTextKeptInLump[#entitiesTextKeptInLump + 1] = entityText
+				end
+			end
+			if anyRemoved then
+				self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, table.concat(entitiesTextKeptInLump))
+			end
+		end
+	end,
+	
 	getLastHammerid_ = function(cls, entitiesText) -- static method
 		local lastHammerid = 0
 		for hammerid in string.gmatch(entitiesText, '\x0A[%s]*"hammerid"[%s]+"([0-9]+)"[%s]*\x0A') do
@@ -3555,6 +3662,13 @@ BspContext = {
 	end,
 }
 BspContext.__index = BspContext
+
+-- Late instanciations:
+entityClassesToLumpLookup = {
+	["info_overlay"] = {false, lumpNameToLuaIndex["LUMP_OVERLAYS"]},
+	["prop_detail"] = {true, getLumpIdFromLumpName("dprp")},
+	["prop_static"] = {true, getLumpIdFromLumpName("sprp")},
+}
 
 -- Lua refresh hack:
 for context in pairs(BspContext._instances) do
