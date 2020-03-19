@@ -17,6 +17,12 @@ Limitations:
 -- TODO - la compression de lumps se fait par carte et non par lump, apparemment => activer compression par défaut lors du remplacement si nécessaire
 
 
+--[[TODO:
+	- listage des classes d'entités présumées présentes
+	- compression de lump automatique
+]]
+
+
 print("map_manipulation_tool_api")
 
 
@@ -38,6 +44,9 @@ BUFFER_LENGTH = 4194304 -- 4 MiB
 FULL_ZERO_BUFFER = nil -- BUFFER_LENGTH of null data, set only on 1st API use
 local WEAK_KEYS = {__mode = "k"}
 local WEAK_VALUES = {__mode = "v"}
+local FLOAT_TEXT_NAN
+local FLOAT_TEXT_INF_POSI
+local FLOAT_TEXT_INF_NEGA
 
 -- lump_t variants:
 local LUMP_T_USUAL = nil -- usual
@@ -74,18 +83,24 @@ do
 	end
 end
 
+
 do
 	-- Functions to decode single-precision floats:
 	
 	local _nan = math.log(-1.)
+	local _inf_posi = 1./0.
+	local _inf_nega = -1./0.
+	FLOAT_TEXT_NAN = tostring(_nan)
+	FLOAT_TEXT_INF_POSI = tostring(_inf_posi)
+	FLOAT_TEXT_INF_NEGA = tostring(_inf_nega)
 	local specialValues = {
 		-- Includes positive & negative int32 equivalents
 		[0x00000000] = 0., -- 0
 		[0x80000000] = -0., -- -0
 		[-2147483648] = -0., -- -0
-		[0x7f800000] = 1./0., -- inf
-		[0xff800000] = -1./0., -- -inf
-		[-8388608] = -1./0., -- -inf
+		[0x7f800000] = _inf_posi, -- inf
+		[0xff800000] = _inf_nega, -- -inf
+		[-8388608] = _inf_nega, -- -inf
 		[0xffc00001] = _nan, -- qNaN
 		[-4194303] = _nan, -- qNaN
 		[0xff800001] = _nan, -- sNaN
@@ -2828,6 +2843,45 @@ BspContext = {
 				end
 			end
 			staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
+		end
+		
+		-- Check that fields do not contain illegal values, and display warnings:
+		do
+			local isvector = isvector
+			local isangle = isangle
+			local isnumber = isnumber
+			local tostring = tostring
+			local warnedFields = {}
+			for i = 1, #staticPropsKeyValues do
+				for key, value in pairs(staticPropsKeyValues[i]) do
+					if not warnedFields[key] then
+						local floatsToCheck
+						if isvector(value) then
+							floatsToCheck = {value.x, value.y, value.z}
+						elseif isangle(value) then
+							floatsToCheck = {value.p, value.y, value.r}
+						elseif isnumber(value) then
+							floatsToCheck = {value}
+						end
+						if floatsToCheck then
+							for j = 1, #floatsToCheck do
+								local textFloatToCheck = tostring(floatsToCheck[j])
+								if textFloatToCheck == FLOAT_TEXT_NAN
+								or textFloatToCheck == FLOAT_TEXT_INF_POSI
+								or textFloatToCheck == FLOAT_TEXT_INF_NEGA then
+									print(
+										'Warning: sprp game lump as text not safe to import back due to weird numbers for keyvalue "'
+										.. key
+										.. '"'
+									)
+									warnedFields[key] = true
+									break
+								end
+							end
+						end
+					end
+				end
+			end
 		end
 		
 		return staticPropsKeyValues, staticPropLeafLump, staticPropLumps, staticPropDictLump
