@@ -1560,7 +1560,7 @@ lump_t = BaseDataStructure:newClass({
 	end,
 	
 	writeTo = function(self, streamDst)
-		if context.specific_lump_t == LUMP_T_L4D2 then
+		if self.context.specific_lump_t == LUMP_T_L4D2 then
 			streamDst:Write(self.context.int32_to_data(self.version))
 			streamDst:Write(self.context.int32_to_data(self.fileofs))
 			streamDst:Write(self.context.int32_to_data(self.filelen))

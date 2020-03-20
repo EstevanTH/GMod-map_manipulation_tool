@@ -569,7 +569,7 @@ do
 								option.DoClick = function(self)
 									DialogFileSelector:new(box, function(selector, folderBase, fullPath)
 										context:extractLumpAsHeaderlessFile(info.isGameLump, info.luaId, false, fullPath, false)
-									end, true, "DATA", "/", typesBinaryNoHeaders, mapTitle .. " Lump " .. name .. " After" .. extensionSaveBinaryNoHeaders)
+									end, true, "DATA", "/", typesBinaryNoHeaders, mapTitle .. " Lump " .. name .. " Before" .. extensionSaveBinaryNoHeaders)
 								end
 							end
 						end
