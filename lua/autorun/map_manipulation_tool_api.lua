@@ -1141,6 +1141,11 @@ function getLumpNameFromLumpId(isGameLump, id)
 	end
 	return idText
 end
+local lumpsNeverCompressed = {
+	[lumpNameToLuaIndex.LUMP_PAKFILE] = true,
+	[lumpNameToLuaIndex.LUMP_GAME_LUMP] = true,
+	[lumpNameToLuaIndex.LUMP_XZIPPAKFILE] = true,
+}
 
 local BaseDataStructure = {
 	-- Base class for data structures in a .bsp file
@@ -2269,6 +2274,31 @@ BspContext = {
 		end
 	end,
 	
+	mapSeemsCompressed = function(self)
+		-- Estimates if the map is compressed
+		
+		if self._mapSeemsCompressed == nil then
+			local compressedProbability = 0
+			for location, lumps in ipairs({self.lumpsSrc, self.gameLumpsSrc}) do
+				local neverCompressed
+				if location == 1 then
+					neverCompressed = lumpsNeverCompressed
+				end
+				for i = 1, #lumps do
+					local ignore = (neverCompressed and neverCompressed[i])
+					if not ignore then
+						local payload = lumps[i].payload
+						if payload then
+							compressedProbability = compressedProbability + (payload.compressed and 1 or -1)
+						end
+					end
+				end
+			end
+			self._mapSeemsCompressed = (compressedProbability > 0)
+		end
+		return self._mapSeemsCompressed
+	end,
+	
 	_setDstLump = function(self, isGameLump, id, lumpInfo)
 		-- Replace a lump in self.lumpsDst or self.gameLumpsDst
 		-- Must be called to apply the lumpInfo into the destination lumps
@@ -2292,6 +2322,17 @@ BspContext = {
 		else
 			lumpInfoOld = self.lumpsDst[id]
 			self.lumpsDst[id] = lumpInfo
+			-- Automatic compression:
+			local toCompress
+			local payloadInitial = self.lumpsSrc[id].payload
+			if payloadInitial then
+				toCompress = payloadInitial.compressed
+			elseif lumpsNeverCompressed[id] then
+				toCompress = false
+			else
+				toCompress = self:mapSeemsCompressed()
+			end
+			self:setLumpCompressed(id, toCompress)
 		end
 		self:_closeOldLumpStream(lumpInfoOld)
 	end,
@@ -3638,7 +3679,7 @@ BspContext = {
 		if isGameLump then
 			gameLumpId = (lumpInfoSrc and lumpInfoSrc.id or lumpInfoDst and lumpInfoDst.id or -1)
 		end
-		local compressedAfter = false
+		local compressedAfter = false -- unsafe: determined by code copied from self:writeNewBsp_()
 		if isGameLump or id == lumpNameToLuaIndex.LUMP_GAME_LUMP then
 			-- Because I decided it is common to all game lumps:
 			local lumpGameLumpToCompress = self.lumpIndexesToCompress[lumpNameToLuaIndex.LUMP_GAME_LUMP]
@@ -3649,11 +3690,11 @@ BspContext = {
 			end
 		else
 			if toCompress == nil then
-				if lumpInfoSrc and lumpInfoSrc.payload then
-					compressedAfter = lumpInfoSrc.payload.compressed or false
+				if lumpInfoDst and lumpInfoDst.payload then
+					compressedAfter = lumpInfoDst.payload.compressed or false
 				end
-			elseif toCompress then
-				compressedAfter = true
+			else
+				compressedAfter = toCompress
 			end
 		end
 		
@@ -3690,7 +3731,7 @@ BspContext = {
 			includeAbsent = true
 		end
 		for i = 1, #self.lumpsSrc do
-			local toCompress = self.lumpIndexesToCompress[i]
+			local toCompress = self.lumpIndexesToCompress[i] -- true / false / nil
 			
 			-- Add lumps:
 			if not only1 or (not only1IsGameLump and i == only1Id) then
