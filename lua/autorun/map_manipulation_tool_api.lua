@@ -3508,6 +3508,7 @@ BspContext = {
 		for i, propKeyValues in ipairs(staticPropsKeyValues) do
 			extraTextLines[#extraTextLines + 1] = [[{]]
 			extraTextLines[#extraTextLines + 1] = [["classname" "prop_dynamic"]]
+			extraTextLines[#extraTextLines + 1] = [["gmod_allowphysgun" "0"]]
 			hammerid = hammerid + 1
 			extraTextLines[#extraTextLines + 1] = string_format('"hammerid" "%u"', hammerid)
 			for _, key in ipairs(staticPropsKeyValuesOrder) do
