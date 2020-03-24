@@ -18,7 +18,6 @@ Limitations:
 
 
 --[[TODO:
-	- listage des classes d'entités présumées présentes
 	- compression de lump automatique
 ]]
 
@@ -30,7 +29,9 @@ print("map_manipulation_tool_api")
 local SysTime = SysTime
 local bit = bit
 local coroutine = coroutine
+local ipairs = ipairs
 local math = math
+local pairs = pairs
 local string = string
 local unpack = unpack
 local table = table
@@ -1428,6 +1429,7 @@ local LumpPayload = BaseDataStructure:newClass({
 	erasePrevious = function(cls, context, streamDst, lumpInfo) -- static method
 		-- Erase a lump payload with null-bytes to save space
 		-- Note: this method is not used in code where lumpInfo is unavailable
+		-- Warning: you must check that the payload is not used elsewhere!
 		-- TODO - mark this space as available for added lumps + where lumpInfo is unavailable
 		
 		local remainingBytes = lumpInfo.filelen
@@ -1476,6 +1478,7 @@ lump_t = BaseDataStructure:newClass({
 		--  Make a lump_t for a written null LumpPayload (in a destination stream)
 		-- Usage 4: lump_t:new(context, nil, nil, other, fileofs=0)
 		--  Make a lump_t from another lump_t, for writing into a destination stream
+		--  This is not needed to "copy" a lump located in the map file (its payload will be protected).
 		-- The file cursor must be at the end of the lump_t when returning.
 		local instance = BaseDataStructure:new(context, streamSrc, nil)
 		setmetatable(instance, cls)
@@ -1840,7 +1843,7 @@ BspContext = {
 		instance.filenameSrc = filenameSrc
 		instance.streamSrc = file.Open(filenameSrc, "rb", "GAME")
 		if instance.streamSrc == nil then
-			error("Unable to open " .. filenameSrc)
+			error('Unable to open "' .. filenameSrc .. '"')
 		end
 		
 		instance.bspHeader = dheader_t:new(instance, instance.streamSrc)
@@ -1950,7 +1953,8 @@ BspContext = {
 				for _, i in ipairs(lumpIndexesOrderedDescFromOffset(lumpsSrc)) do
 					-- Reminder: null lumps in self.lumpsSrc are listed at the end of the loop, always past a break statement.
 					-- -> payloadSrc cannot be nil except for the LUMP_GAME_LUMP
-					local payloadSrc = lumpsSrc[i].payload
+					local lumpInfoSrc = lumpsSrc[i]
+					local payloadSrc = lumpInfoSrc.payload
 					local payloadDst = lumpsDst[i].payload
 					if i == LUMP_GAME_LUMP then
 						-- In this tool the LUMP_GAME_LUMP cannot be removed, even when there are 0 game lumps.
@@ -1958,17 +1962,20 @@ BspContext = {
 						-- Reminder: there is no payload field for the LUMP_GAME_LUMP.
 						if lumpGameLumpModified then
 							-- Modified LUMP_GAME_LUMP, truncate (final) to allow it to be actually shorter:
-							remainingBytes_ = lumpsSrc[i].fileofs
+							remainingBytes_ = lumpInfoSrc.fileofs
 						else
 							-- The file is now truncated enough.
 						end
+						break -- TODO - why exactly?
+					elseif self:_payloadUsedWriteProtected(payloadSrc) then
+						-- The file is now truncated enough.
 						break
 					elseif payloadDst == nil then
 						-- Removed lump, truncate more:
-						remainingBytes_ = lumpsSrc[i].fileofs
+						remainingBytes_ = lumpInfoSrc.fileofs
 					elseif payloadDst ~= payloadSrc then
 						-- Modified lump, truncate (final) to allow it to be actually shorter:
-						remainingBytes_ = lumpsSrc[i].fileofs
+						remainingBytes_ = lumpInfoSrc.fileofs
 						break
 					else
 						-- The file is now truncated enough.
@@ -2014,9 +2021,13 @@ BspContext = {
 				
 				local isFinalLump = false -- end-of-file unlimited storage?
 				local lumpInfoSrc = self.lumpsSrc[i]
-				if lumpInfoSrc.fileofs ~= 0 and lumpInfoSrc.filelen ~= 0
-				and lumpInfoSrc.fileofs + lumpInfoSrc.filelen >= streamDst:Size() then
-					-- The lump payload located at the end has unlimited storage!
+				local payloadSrc = lumpInfoSrc.payload
+				local payloadSrcWriteProtected = self:_payloadUsedWriteProtected(payloadSrc)
+				if lumpInfoSrc.fileofs ~= 0 and lumpInfoSrc.filelen ~= 0 -- lump exists
+				and (lumpInfoSrc.fileofs + lumpInfoSrc.filelen >= streamDst:Size() -- enough space
+				or payloadSrcWriteProtected) then -- original payload is write-protected
+					-- The payload will be written at the end of the file.
+					-- Warning: if the lump is planned to be erased then the handling must not truncate the file.
 					isFinalLump = true
 				end
 				
@@ -2105,6 +2116,7 @@ BspContext = {
 						if not jumpNoFit then
 							break -- okay good!
 						else
+							-- Erase the old LUMP_GAME_LUMP:
 							LumpPayload:erasePrevious(self, streamDst, self.lumpsSrc[i])
 						end
 					end
@@ -2128,34 +2140,52 @@ BspContext = {
 					local payload = lumpsDst[i].payload
 					local payloadRoom = lumpInfoSrc.filelen
 					if isFinalLump then
-						-- The lump payload located at the end has unlimited storage!
+						-- Any lump payload located at the current end has unlimited storage!
+						-- Warning: this applies too if lump removed but payload preserved for another lump id (proper handling required).
 						payloadRoom = nil
 					end
+					local shouldErasePrevious = false
 					if payload ~= nil then
 						-- The lump to copy from has a payload.
-						streamDst:Seek(lumpInfoSrc.fileofs) -- 0 if initially absent: written ok at the end
-						lumpsDst[i] = payload:copyTo(streamDst, withCompression, payloadRoom)
-						if payloadRoom == nil then -- unlimited end-of-file storage
-							-- Redefine the end of the file.
-							print("\t\tTruncating after final lump payload...")
-							streamDst:truncate()
+						if self:_payloadUsedWriteProtected(payload) then
+							-- This means that the payload already is in the map file (referenced for another lump id).
+							-- No copy is required so far.
+							print("\t\tThe payload is already in the map file, no copy required!")
+							shouldErasePrevious = true
+						else
+							streamDst:Seek(lumpInfoSrc.fileofs) -- 0 if initially absent: written ok at the end
+							lumpsDst[i] = payload:copyTo(streamDst, withCompression, payloadRoom)
+							if payloadRoom == nil then -- unlimited end-of-file storage
+								-- Redefine the end of the file.
+								print("\t\tTruncating after final lump payload...")
+								streamDst:truncate()
+							end
 						end
 					else
 						-- The lump to copy is a null payload.
-						if lumpInfoSrc.payload ~= nil then
-							if payloadRoom == nil then -- unlimited end-of-file storage
-								-- Redefine the end of the file.
+						if payloadSrc ~= nil then
+							if payloadRoom == nil and not payloadSrcWriteProtected then
+								-- Unlimited end-of-file storage
+								-- Redefining the end of the file to remove the payload:
 								if streamDst:Size() > lumpInfoSrc.fileofs then
 									-- This should not happen with a properly truncated initial copy.
-									print("\t\tTruncating before removed final lump payload...")
+									print("\t\tTruncating before removed final lump payload [should not happen]...")
 									streamDst:Seek(lumpInfoSrc.fileofs)
 									streamDst:truncate()
 								end
 							else
-								LumpPayload:erasePrevious(self, streamDst, lumpInfoSrc)
+								shouldErasePrevious = true
 							end
 						end
 						lumpsDst[i] = lump_t:new(self, nil, false)
+					end
+					if shouldErasePrevious then
+						if payloadSrcWriteProtected then
+							print("\t\tNot erasing the previous payload because used elsewhere!")
+						else
+							-- The payload that used to be used for this lump id is not used anymore.
+							LumpPayload:erasePrevious(self, streamDst, lumpInfoSrc)
+						end
 					end
 				end
 			end
@@ -2177,12 +2207,11 @@ BspContext = {
 			end
 			local filenameDst = string.gsub(mapFilenameDst, "%.bsp%.dat$", "", 1) .. ".lua.txt"
 			local streamDst = FileForWrite:new(filenameDst, "w", "DATA")
-			if streamDst then
-				callSafe(streamDst.Write, streamDst, entitiesTextLua)
-				streamDst:Close()
-			else
-				error('Unable to open "' .. filenameDst .. '" for write')
+			if streamDst == nil then
+				error('Unable to open "data/' .. filenameDst .. '" for write')
 			end
+			callSafe(streamDst.Write, streamDst, entitiesTextLua)
+			streamDst:Close()
 		end
 	end,
 	
@@ -2191,7 +2220,7 @@ BspContext = {
 		
 		local streamDst = FileForWrite:new(filenameDst, "wb", "DATA")
 		if streamDst == nil then
-			error("Unable to open data/" .. filenameDst .. " for write")
+			error('Unable to open "data/' .. filenameDst .. '" for write')
 		end
 		
 		local success, message = callSafe(self.writeNewBsp_, self, streamDst)
@@ -2302,6 +2331,30 @@ BspContext = {
 			self.lumpIndexesToCompress[id] = nil
 		end
 		self:_closeOldLumpStream(lumpInfoOld)
+	end,
+	
+	_payloadUsedWriteProtected = function(self, payloadSrc)
+		-- Checks if the payloadSrc is used in the output map, to protected it
+		-- The whole design is not compatible with game lumps.
+		
+		if payloadSrc then
+			local streamSrc = payloadSrc.streamSrc
+			if streamSrc == self.streamSrc then -- just to be sure that payloadSrc is from the map
+				local fileofs = payloadSrc.lumpInfoSrc.fileofs
+				local lumpsDst = self.lumpsDst
+				for i = 1, #lumpsDst do
+					local payloadDst = lumpsDst[i].payload
+					if payloadDst and payloadDst.streamSrc == streamSrc then
+						-- payloadDst comes from the same stream as payloadSrc.
+						if payloadDst.lumpInfoSrc.fileofs == fileofs then
+							-- payloadSrc in use: it is write-protected.
+							return true
+						end
+					end
+				end
+			end
+		end
+		return false
 	end,
 	
 	clearLump = function(self, isGameLump, id)
@@ -2604,6 +2657,9 @@ BspContext = {
 		local payload = lumpInfo.payload
 		if payload ~= nil then
 			local streamDst = FileForWrite:new(filePath, "wb", "DATA")
+			if streamDst == nil then
+				error('Unable to open "data/' .. filePath .. '" for write')
+			end
 			callSafe(payload.copyTo, payload, streamDst, withCompression, nil, nil, nil, true)
 			streamDst:Close()
 		else
@@ -2686,6 +2742,9 @@ BspContext = {
 	extractLumpAsTextFile = function(self, isGameLump, id, fromDst, filePath)
 		local text = self:extractLumpAsText(isGameLump, id, fromDst)
 		local streamDst = FileForWrite:new(filePath, "wb", "DATA")
+		if streamDst == nil then
+			error('Unable to open "data/' .. filePath .. '" for write')
+		end
 		callSafe(streamDst.Write, streamDst, text)
 		streamDst:Close()
 	end,
@@ -3465,6 +3524,28 @@ BspContext = {
 		entitiesText = table.concat({entitiesText, table.concat(extraTextLines, "\x0A")})
 		self:setupLumpFromText(false, lumpNameToLuaIndex.LUMP_ENTITIES, entitiesText)
 		self:clearLump(true, getLumpIdFromLumpName("sprp"))
+	end,
+	
+	removeHdr = function(self, fromDst)
+		-- Remove the High Dynamic Range lighting from the map
+		
+		local lumpInfoLightingClassic = self:_getLump(false, lumpNameToLuaIndex.LUMP_LIGHTING, fromDst)
+		local lumpInfoLightingHdr = self:_getLump(false, lumpNameToLuaIndex.LUMP_LIGHTING_HDR, fromDst)
+		local lumpInfoWorldLightsClassic = self:_getLump(false, lumpNameToLuaIndex.LUMP_WORLDLIGHTS, fromDst)
+		local lumpInfoWorldLightsHdr = self:_getLump(false, lumpNameToLuaIndex.LUMP_WORLDLIGHTS_HDR, fromDst)
+		if lumpInfoLightingClassic.payload then
+			-- The map comes with non-HDR lighting:
+			self:clearLump(false, lumpNameToLuaIndex.LUMP_LIGHTING_HDR)
+		elseif lumpInfoLightingHdr.payload then
+			-- The map comes only with HDR lighting:
+			print("Removing HDR: the map comes only with HDR lighting, expect weird look and possibly client crashes!")
+			self:_setDstLump(false, lumpNameToLuaIndex.LUMP_LIGHTING, lumpInfoLightingHdr)
+			self:clearLump(false, lumpNameToLuaIndex.LUMP_LIGHTING_HDR)
+			if not lumpInfoWorldLightsClassic.payload then
+				-- Copy HDR world lights into classic world lights if missing:
+				self:_setDstLump(false, lumpNameToLuaIndex.LUMP_WORLDLIGHTS, lumpInfoWorldLightsHdr)
+			end
+		end
 	end,
 	
 	_closeOldLumpStream = function(self, lumpInfoOld)

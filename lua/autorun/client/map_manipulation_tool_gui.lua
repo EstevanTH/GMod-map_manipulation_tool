@@ -488,6 +488,8 @@ do
 	local LUMPS_LIGHTING = { -- by name
 		["LUMP_LIGHTING"] = true,
 		["LUMP_LIGHTING_HDR"] = true,
+		["LUMP_WORLDLIGHTS"] = true,
+		["LUMP_WORLDLIGHTS_HDR"] = true,
 	}
 	local LABEL_AS_TEXT_FILE = "As text file"
 	local LABEL_AS_BINARY_NO_HEADERS = "As binary file without headers"
@@ -945,7 +947,7 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		btnHdrRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
 		btnHdrRemove:SetText("Remove HDR")
 		btnHdrRemove.DoClick = function(self)
-			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING_HDR"))
+			context:removeHdr(true)
 			refreshLumpsList()
 		end
 	end
