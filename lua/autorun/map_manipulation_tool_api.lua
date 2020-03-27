@@ -12,14 +12,7 @@ Limitations:
 	-- id Stéam du jeu ou 0 ?
 -- TODO - membres par défaut, avec commentaires descriptifs
 -- TODO - fichier journal
--- TODO - attention suppression / édition lumps dupliqués vers 1 unique charge utile (HDR etc.)
 -- TODO - interdire remplacement (sans effet) & suppression (sans effet) de LUMP_GAME_LUMP
--- TODO - la compression de lumps se fait par carte et non par lump, apparemment => activer compression par défaut lors du remplacement si nécessaire
-
-
---[[TODO:
-	- compression de lump automatique
-]]
 
 
 print("map_manipulation_tool_api")
@@ -3167,7 +3160,7 @@ BspContext = {
 					-- List all in-lump entities:
 			[[		do]],
 			[[			local inLumpEntities = ents.GetAll()]], -- may contain Lua-created entities (hook order)!
-			[[			for i = 1, #inLumpEntities do]], -- may contain Lua-created entities
+			[[			for i = 1, #inLumpEntities do]],
 			[[				ent = inLumpEntities[i] ]],
 			[[				if inLumpCreatedByMap( ent ) then]],
 			[[					local hammerid = tonumber( ent:GetKeyValues()["hammerid"] )]],
@@ -3337,6 +3330,8 @@ BspContext = {
 					entitiesTextLua[#entitiesTextLua + 1] = [[		]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		ent = hammeridToEntity[]] .. hammerid .. [[] ]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		if IsValid( ent ) then]]
+					entitiesTextLua[#entitiesTextLua + 1] = [[			-- classname: ]] .. (classname and ('"' .. classname .. '"') or tostring(classname))
+					entitiesTextLua[#entitiesTextLua + 1] = [[			-- targetname: ]] .. (targetname and ('"' .. targetname .. '"') or tostring(targetname))
 					entitiesTextLua[#entitiesTextLua + 1] = [[			entities[]] .. i .. [[] = ent]]
 					entitiesTextLua[#entitiesTextLua + 1] = [[		end]]
 					if classname == nil then
