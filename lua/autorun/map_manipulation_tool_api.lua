@@ -965,6 +965,7 @@ local entityClassesForceRespawn = {
 
 local entityClassesAvoidRespawn = {
 	-- Entity classes that should not be respawned despite having a prefix mentioned above:
+	["func_useableladder"] = true,
 }
 
 local staticPropsKeyValuesOrder = {
