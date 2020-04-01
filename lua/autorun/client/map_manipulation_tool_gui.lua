@@ -3,6 +3,11 @@ print("map_manipulation_tool_gui")
 local api = map_manipulation_tool_api
 local surface = surface
 
+local hl = GetConVar("gmod_language"):GetString()
+cvars.AddChangeCallback("gmod_language", function(convar, oldValue, newValue)
+	hl = newValue
+end, "map_manipulation_tool_gui")
+
 local TITLE_BAR_THICKNESS = 24
 local SCROLL_BAR_THICKNESS = 15
 local BUTTON_HEIGHT = 24
@@ -135,10 +140,18 @@ do
 			if file.Exists(fullPath, folderBase) then
 				if selector.withSave then
 					Derma_Query(
-						"The specified file already exists!\nDo you want to overwrite it?",
-						"Save as", 
-						"Yes", submit,
-						"Cancel", nil
+						(
+							hl == "fr" and "Le fichier spécifié existe déjà !\nVeux-tu le remplacer ?" or
+							"The specified file already exists!\nDo you want to overwrite it?"),
+						(
+							hl == "fr" and "Enregistrer sous" or
+							"Save as"),
+						(
+							hl == "fr" and "Oui" or
+							"Yes"), submit,
+						(
+							hl == "fr" and "Annuler" or
+							"Cancel"), nil
 					)
 				else
 					submit()
@@ -148,9 +161,15 @@ do
 					submit()
 				else
 					Derma_Message(
-						"The specified file does not exist!",
-						"Open",
-						"Okay"
+						(
+							hl == "fr" and "Le fichier spécifié n'existe pas !" or
+							"The specified file does not exist!"),
+						(
+							hl == "fr" and "Ouvrir" or
+							"Open"),
+						(
+							hl == "fr" and "OK" or
+							"Okay")
 					)
 				end
 			end
@@ -176,21 +195,39 @@ do
 		local fullPath = nameFieldInfo.fullPath
 		if folderBase ~= "DATA" then
 			Derma_Message(
-				"Folders cannnot be created outside the DATA folder base!",
-				"Save as",
-				"Okay"
+				(
+					hl == "fr" and "Les dossiers ne peuvent pas être créés en-dehors du répertoire de base DATA !" or
+					"Folders cannot be created outside the DATA folder base!"),
+				(
+					hl == "fr" and "Enregistrer sous" or
+					"Save as"),
+				(
+					hl == "fr" and "OK" or
+					"Okay")
 			)
 		elseif file.IsDir(fullPath, folderBase) then
 			Derma_Message(
-				"The specified folder already exists!",
-				"Save as",
-				"Okay"
+				(
+					hl == "fr" and "Le répertoire spécifié existe déjà !" or
+					"The specified folder already exists!"),
+				(
+					hl == "fr" and "Enregistrer sous" or
+					"Save as"),
+				(
+					hl == "fr" and "OK" or
+					"Okay")
 			)
 		elseif file.Exists(fullPath, folderBase) then
 			Derma_Message(
-				"The specified folder names a file that already exists!",
-				"Save as",
-				"Okay"
+				(
+					hl == "fr" and "Le répertoire spécifié correspond à un fichier qui existe déjà !" or
+					"The specified folder names a file that already exists!"),
+				(
+					hl == "fr" and "Enregistrer sous" or
+					"Save as"),
+				(
+					hl == "fr" and "OK" or
+					"Okay")
 			)
 		else
 			file.CreateDir(fullPath)
@@ -204,9 +241,15 @@ do
 				selector.nameField:SetText(selector.saveDefaultName)
 			else
 				Derma_Message(
-					"The new folder could not be created!",
-					"Save as",
-					"Okay"
+				(
+					hl == "fr" and "Le nouveau répertoire n'a pas pu être créé !" or
+					"The new folder could not be created!"),
+				(
+					hl == "fr" and "Enregistrer sous" or
+					"Save as"),
+				(
+					hl == "fr" and "OK" or
+					"Okay")
 				)
 			end
 		end
@@ -250,7 +293,14 @@ do
 				box:MakePopup() -- overrides position hierarchy and enabled keyboard input
 				box:SetSize(totalW, totalH)
 				box:Center()
-				box:SetTitle(withSave and "Save as" or "Open")
+				box:SetTitle(
+					withSave and (
+						hl == "fr" and "Enregistrer sous" or
+						"Save as")
+					or (
+						hl == "fr" and "Ouvrir" or
+						"Open")
+				)
 				box:DoModal()
 			end
 			local filepicker = vgui.Create("DFileBrowser", box); do
@@ -266,7 +316,14 @@ do
 				buttonOpenSave = vgui.Create("DButton", box); do
 					buttonOpenSave:SetSize(buttonsW, BUTTON_HEIGHT)
 					buttonOpenSave:SetPos(buttonOpenSaveX, buttonsY)
-					buttonOpenSave:SetText(withSave and "Save" or "Open")
+					buttonOpenSave:SetText(
+						withSave and (
+							hl == "fr" and "Enregistrer" or
+							"Save")
+						or (
+							hl == "fr" and "Ouvrir" or
+							"Open")
+					)
 					buttonOpenSave.DoClick = doSubmit
 				end
 			end
@@ -283,7 +340,10 @@ do
 				buttonNewFolder = vgui.Create("DButton", box); do
 					buttonNewFolder:SetSize(buttonsW, BUTTON_HEIGHT)
 					buttonNewFolder:SetPos(buttonNewFolderX, buttonsY)
-					buttonNewFolder:SetText("As new folder")
+					buttonNewFolder:SetText(
+						hl == "fr" and "Comme nouveau dossier" or
+						"As new folder"
+					)
 					buttonNewFolder.DoClick = doCreateFolder
 				end
 			end
@@ -320,6 +380,7 @@ do
 		self:SetEnabled(false)
 	end
 	local function btnWiki_DoClick(self)
+		-- TODO - page correspondante (GitHub) si entité connue
 		gui.OpenURL("https://developer.valvesoftware.com/wiki/" .. self.classname)
 	end
 	local function row_Paint(self, w, h)
@@ -360,7 +421,10 @@ do
 				btnRemove:SetSize(w, BUTTON_HEIGHT)
 				btnRemove:SetPos(x, BUTTON_Y)
 				btnRemove:SetImage("icon16/delete.png")
-				btnRemove:SetText("Remove occurrences")
+				btnRemove:SetText(
+					hl == "fr" and "Supprimer occurrences" or
+					"Remove occurrences"
+				)
 				btnRemove.row = row
 				btnRemove.assistant = remover.assistant
 				btnRemove.context = remover.context
@@ -375,7 +439,10 @@ do
 			btnWiki:SetSize(w, BUTTON_HEIGHT)
 			btnWiki:SetPos(x, BUTTON_Y)
 			btnWiki:SetImage("icon16/information.png")
-			btnWiki:SetText("Open the Wiki")
+			btnWiki:SetText(
+				hl == "fr" and "Ouvrir le Wiki" or
+				"Open the Wiki"
+			)
 			btnWiki.classname = classname
 		end
 		
@@ -391,7 +458,10 @@ do
 			remover:MakePopup()
 			remover:SetKeyboardInputEnabled(false)
 			remover:SetWide(WIDTH)
-			remover:SetTitle("Remove entities by class")
+			remover:SetTitle(
+				hl == "fr" and "Enlever entités par classe" or
+				"Remove entities by class"
+			)
 			remover.btnMinim:SetVisible(false)
 			remover.btnMaxim:SetVisible(false)
 			remover.assistant = assistant
@@ -491,12 +561,30 @@ do
 		["LUMP_WORLDLIGHTS"] = true,
 		["LUMP_WORLDLIGHTS_HDR"] = true,
 	}
-	local LABEL_AS_TEXT_FILE = "As text file"
-	local LABEL_AS_BINARY_NO_HEADERS = "As binary file without headers"
-	local LABEL_AS_UNCOMPRESSED_ZIP = "As uncompressed ZIP file"
-	local LABEL_FROM_TEXT_FILE = "Text file"
-	local LABEL_FROM_BINARY_NO_HEADERS = "Binary file without headers"
-	local LABEL_FROM_UNCOMPRESSED_ZIP = "Uncompressed ZIP file"
+	local LABEL_AS_TEXT_FILE = (
+		hl == "fr" and "Sous forme de fichier texte" or
+		"As text file"
+	)
+	local LABEL_AS_BINARY_NO_HEADERS = (
+		hl == "fr" and "Sous forme de fichier binaire sans entêtes" or
+		"As binary file without headers"
+	)
+	local LABEL_AS_UNCOMPRESSED_ZIP = (
+		hl == "fr" and "Sous forme de fichier ZIP non oompressé" or
+		"As uncompressed ZIP file"
+	)
+	local LABEL_FROM_TEXT_FILE = (
+		hl == "fr" and "Fichier texte" or
+		"Text file"
+	)
+	local LABEL_FROM_BINARY_NO_HEADERS = (
+		hl == "fr" and "Fichier binaire sans entêtes" or
+		"Binary file without headers"
+	)
+	local LABEL_FROM_UNCOMPRESSED_ZIP = (
+		hl == "fr" and "Fichier ZIP non oompressé" or
+		"Uncompressed ZIP file"
+	)
 	
 	local Paint = function(self, w,h)
 		local info = self.info
@@ -549,14 +637,20 @@ do
 		local canExtractSrc = (info.sizeBefore > 0)
 		local canExtractDst = (info.sizeAfter > 0 and not LUMPS_NO_EXTRACT_AFTER[name])
 		if canExtractSrc or canExtractDst then
-			local submenu1, icon1 = menu:AddSubMenu("Extract"); do
+			local submenu1, icon1 = menu:AddSubMenu(
+				hl == "fr" and "Extraire" or
+				"Extract"
+			); do
 				icon1:SetIcon("icon16/brick_go.png")
 				local labelAsBinaryNoHeaders = LABEL_AS_BINARY_NO_HEADERS
 				if LUMPS_PAK_FILE[name] then
 					labelAsBinaryNoHeaders = LABEL_AS_UNCOMPRESSED_ZIP
 				end
 				if canExtractSrc then
-					local submenu2, icon2 = submenu1:AddSubMenu("From Before"); do
+					local submenu2, icon2 = submenu1:AddSubMenu(
+						hl == "fr" and "Depuis Avant" or
+						"From Before"
+					); do
 						if LUMPS_AS_TEXT[name] then
 							local option = submenu2:AddOption(LABEL_AS_TEXT_FILE); do
 								option.DoClick = function(self)
@@ -578,7 +672,10 @@ do
 					end
 				end
 				if canExtractDst then
-					local submenu2, icon2 = submenu1:AddSubMenu("From After"); do
+					local submenu2, icon2 = submenu1:AddSubMenu(
+						hl == "fr" and "Depuis Après" or
+						"From After"
+					); do
 						if LUMPS_AS_TEXT[name] then
 							local option = submenu2:AddOption(LABEL_AS_TEXT_FILE); do
 								option.DoClick = function(self)
@@ -607,7 +704,10 @@ do
 			if LUMPS_PAK_FILE[name] then
 				labelFromBinaryNoHeaders = LABEL_FROM_UNCOMPRESSED_ZIP
 			end
-			local submenu1, icon1 = menu:AddSubMenu("Replace with"); do
+			local submenu1, icon1 = menu:AddSubMenu(
+				hl == "fr" and "Remplacer par" or
+				"Replace with"
+			); do
 				icon1:SetIcon("icon16/brick_edit.png")
 				if LUMPS_AS_TEXT[name] then
 					local option = submenu1:AddOption(LABEL_FROM_TEXT_FILE); do
@@ -634,7 +734,10 @@ do
 		
 		if info.modified and not info.deleted and not info.isGameLump and not LUMPS_NO_COMPRESS[name] then
 			if info.compressedAfter then
-				local option = menu:AddOption("Deactivate compression"); do
+				local option = menu:AddOption(
+					hl == "fr" and "Désactiver compression" or
+					"Deactivate compression"
+				); do
 					option:SetIcon("icon16/compress.png")
 					option.DoClick = function(self)
 						context:setLumpCompressed(info.luaId, false)
@@ -642,7 +745,10 @@ do
 					end
 				end
 			else
-				local option = menu:AddOption("Activate compression"); do
+				local option = menu:AddOption(
+					hl == "fr" and "Activer compression" or
+					"Activate compression"
+				); do
 					option:SetIcon("icon16/compress.png")
 					option.DoClick = function(self)
 						context:setLumpCompressed(info.luaId, true)
@@ -653,7 +759,10 @@ do
 		end
 		
 		if not info.deleted and not info.absent and not LUMPS_NO_ERASE[name] then
-			local option = menu:AddOption("Erase"); do
+			local option = menu:AddOption(
+				hl == "fr" and "Effacer" or
+				"Erase"
+			); do
 				option:SetIcon("icon16/brick_delete.png")
 				option.DoClick = function(self)
 					context:clearLump(info.isGameLump, info.luaId)
@@ -663,7 +772,10 @@ do
 		end
 		
 		if info.modified then
-			local option = menu:AddOption("Revert changes"); do
+			local option = menu:AddOption(
+				hl == "fr" and "Défaire les changements" or
+				"Revert changes"
+			); do
 				option:SetIcon("icon16/arrow_undo.png")
 				option.DoClick = function(self)
 					context:revertLumpChanges(info.isGameLump, info.luaId)
@@ -797,7 +909,14 @@ do
 			cellCompressedBefore:SetContentAlignment(ALIGN_MIDDLE_CENTER)
 			w = LUMP_COLUMN_WIDTH_COMPRESSED
 			cellCompressedBefore:SetSize(w - LUMP_CELL_MARGIN_X_TOTAL, LUMP_ROW_HEIGHT)
-			cellCompressedBefore:SetText(info.compressedBefore and "Yes" or "No")
+			cellCompressedBefore:SetText(
+				info.compressedBefore and (
+					hl == "fr" and "Oui" or
+					"Yes")
+				or (
+					hl == "fr" and "Non" or
+					"No")
+			)
 		end
 		x = x + w
 		local cellModified = vgui.Create("DLabel", row); do
@@ -806,7 +925,14 @@ do
 			cellModified:SetContentAlignment(ALIGN_MIDDLE_CENTER)
 			w = LUMP_COLUMN_WIDTH_MODIFIED
 			cellModified:SetSize(w - LUMP_CELL_MARGIN_X_TOTAL, LUMP_ROW_HEIGHT)
-			cellModified:SetText(info.modified and "Yes" or "No")
+			cellModified:SetText(
+				info.modified and (
+					hl == "fr" and "Oui" or
+					"Yes")
+				or (
+					hl == "fr" and "Non" or
+					"No")
+			)
 		end
 		x = x + w
 		local cellSizeAfter = vgui.Create("DLabel", row); do
@@ -824,7 +950,14 @@ do
 			cellCompressedAfter:SetContentAlignment(ALIGN_MIDDLE_CENTER)
 			w = LUMP_COLUMN_WIDTH_COMPRESSED
 			cellCompressedAfter:SetSize(w - LUMP_CELL_MARGIN_X_TOTAL, LUMP_ROW_HEIGHT)
-			cellCompressedAfter:SetText(info.compressedAfter and "Yes" or "No")
+			cellCompressedAfter:SetText(
+				info.compressedAfter and (
+					hl == "fr" and "Oui" or
+					"Yes")
+				or (
+					hl == "fr" and "Non" or
+					"No")
+			)
 		end
 		x = x + w
 		
@@ -871,12 +1004,40 @@ local function openAssistant(mapName)
 	local mapDetails = vgui.Create("DListView", assistant); do
 		assistant.mapDetails = mapDetails
 		mapDetails:SetPos(X_COL_1, TITLE_BAR_THICKNESS + MARGIN)
-		mapDetails:AddColumn("Property")
-		mapDetails:AddColumn("Value")
-		mapDetails:AddLine("Map Revision", tostring(info.mapRevision))
-		mapDetails:AddLine("Size", string.format("%.2f MiB", info.size / 1048576.))
+		mapDetails:AddColumn(
+			hl == "fr" and "Propriété" or
+			"Property"
+		)
+		mapDetails:AddColumn(
+			hl == "fr" and "Valeur" or
+			"Value"
+		)
+		mapDetails:AddLine(
+			(
+				hl == "fr" and "Révision Carte" or
+				"Map Revision"),
+			tostring(info.mapRevision)
+		)
+		mapDetails:AddLine(
+			(
+				hl == "fr" and "Taille" or
+				"Size"),
+			string.format("%.2f MiB", info.size / 1048576.)
+		)
 		mapDetails:AddLine("Version", tostring(info.version))
-		mapDetails:AddLine("Endianness", info.bigEndian and "Big" or "Little")
+		mapDetails:AddLine(
+			(
+				hl == "fr" and "Boutisme" or
+				"Endianness"),
+			(
+				info.bigEndian and (
+					hl == "fr" and "Gros" or
+					"Big")
+				or (
+					hl == "fr" and "Petit" or
+					"Little")
+			)
+		)
 		mapDetails:SetSize(WIDTH_1_3, BUTTON_HEIGHT * 3 + MARGIN * 2)
 	end
 	
@@ -888,7 +1049,10 @@ local function openAssistant(mapName)
 		assistant.btnEntitiesEditing = btnEntitiesEditing
 		btnEntitiesEditing:SetPos(X_COL_2_3, TITLE_BAR_THICKNESS + MARGIN)
 		btnEntitiesEditing:SetSize(WIDTH_2_3, BUTTON_HEIGHT)
-		btnEntitiesEditing:SetText("Enter Entity editing mode")
+		btnEntitiesEditing:SetText(
+			hl == "fr" and "Entrer en mode d'édition d'Entités" or
+			"Enter Entity editing mode"
+		)
 		btnEntitiesEditing:SetEnabled(false)
 		-- TODO - donner une arme d'outil + masquer la fenêtre sauf dans le menu Echap
 		-- TODO - ne pas oublier de supprimer l'arme d'outil lors de la fermeture
@@ -901,16 +1065,31 @@ local function openAssistant(mapName)
 		y = y + btnEntitiesEditing:GetTall() + MARGIN
 		btnMoveEntitiesToLua:SetPos(X_COL_2_3, y)
 		btnMoveEntitiesToLua:SetSize(WIDTH_2_3, BUTTON_HEIGHT)
-		btnMoveEntitiesToLua:SetText("Remove many entities & put them into a Lua file")
+		btnMoveEntitiesToLua:SetText(
+			hl == "fr" and "Retirer plein d'entités & les placer dans un fichier Lua" or
+			"Remove many entities & put them into a Lua file"
+		)
 		local function moveEntitiesToLua()
 			context:moveEntitiesToLua()
 			refreshLumpsList()
 		end
 		btnMoveEntitiesToLua.DoClick = function(self)
 			Derma_Query(
-				[[You are about to take a maximum of entities from the LUMP_ENTITIES.
+				(
+					hl == "fr" and [[Tu t'apprêtes à prendre un maximum d'entités du LUMP_ENTITIES.
+Un script Lua côté serveur sera généré pour recréer ces entités.
+Place ce script uniquement sur le serveur dans lua/autorun/server/ pour le garder en sécurité.
+
+Cette fonctionnalité est prévue pour dissuader les voleurs de cartes d'utiliser ta carte.
+Si tu veux publier de telles cartes sur le Workshop, merci d'opter pour le type "ServerContent".
+N'utilise jamais le type "map" avec des cartes protégées !
+
+Certaines fonctionnalités avancées de carte peuvent se retrouver cassées par ce procédé.
+La bonne nouvelle est que tu peux choisir si une certaine entité devrait rester dans le LUMP_ENTITIES ou pas !
+La maîtrise est donnée en ajoutant un hook sur l'événement "map_manipulation_tool:moveEntitiesToLua:moveToLua".]] or
+					[[You are about to take a maximum of entities from the LUMP_ENTITIES.
 A server-side Lua script will be generated to re-create these entities.
-Only put this script on the server in the lua/autorun/server/ to keep it safe.
+Only put this script on the server in lua/autorun/server/ to keep it safe.
 
 This feature is meant to dissuade map-stealers from using your map.
 If you want to publish such maps on the Workshop, please use the type "ServerContent".
@@ -918,10 +1097,14 @@ Never use the type "map" with protected maps!
 
 Some advanced map features may get broken by this process.
 The good news is that you can choose if a given entity should remain in the LUMP_ENTITIES or not!
-Control is given my adding a hook on the event "map_manipulation_tool:moveEntitiesToLua:moveToLua".]],
+Control is given by adding a hook on the event "map_manipulation_tool:moveEntitiesToLua:moveToLua".]]),
 				"LUMP_ENTITIES -> Lua", 
-				"Continue", moveEntitiesToLua,
-				"Cancel", nil
+				(
+					hl == "fr" and "Continuer" or
+					"Continue"), moveEntitiesToLua,
+				(
+					hl == "fr" and "Annuler" or
+					"Cancel"), nil
 			)
 		end
 	end
@@ -932,7 +1115,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		y = y + btnMoveEntitiesToLua:GetTall() + MARGIN
 		btnPropsStaticToDynamic:SetPos(X_COL_2_3, y)
 		btnPropsStaticToDynamic:SetSize(WIDTH_2_3, BUTTON_HEIGHT)
-		btnPropsStaticToDynamic:SetText("Convert all prop_static's to prop_dynamic's")
+		btnPropsStaticToDynamic:SetText(
+			hl == "fr" and "Convertir chaque prop_static en prop_dynamic" or
+			"Convert all prop_static's into prop_dynamic's"
+		)
 		btnPropsStaticToDynamic.DoClick = function(self)
 			context:convertStaticPropsToDynamic(true)
 			refreshLumpsList()
@@ -945,7 +1131,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		y = y + mapDetails:GetTall() + MARGIN
 		btnHdrRemove:SetPos(X_COL_1, y)
 		btnHdrRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnHdrRemove:SetText("Remove HDR")
+		btnHdrRemove:SetText(
+			hl == "fr" and "Retirer la HDR" or
+			"Remove HDR"
+		)
 		btnHdrRemove.DoClick = function(self)
 			context:removeHdr(true)
 			refreshLumpsList()
@@ -958,7 +1147,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		x = x + btnHdrRemove:GetWide() + MARGIN
 		btnLightingRemove:SetPos(x, y)
 		btnLightingRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnLightingRemove:SetText("Remove Lighting")
+		btnLightingRemove:SetText(
+			hl == "fr" and "Retirer l'Éclairage" or
+			"Remove Lighting"
+		)
 		btnLightingRemove.DoClick = function(self)
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING_HDR"))
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING"))
@@ -972,7 +1164,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		x = x + btnLightingRemove:GetWide() + MARGIN
 		btnRemoveEntitiesByClass:SetPos(x, y)
 		btnRemoveEntitiesByClass:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
-		btnRemoveEntitiesByClass:SetText("Remove entities by class")
+		btnRemoveEntitiesByClass:SetText(
+			hl == "fr" and "Retirer entités par classe" or
+			"Remove entities by class"
+		)
 		btnRemoveEntitiesByClass.DoClick = function(self)
 			openEntitiesByClassRemover(assistant)
 		end
@@ -985,7 +1180,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrId:SetSize(LUMP_COLUMN_WIDTH_ID, LUMP_HEADER_HEIGHT_1 * 2)
 	end
 	
-	local hdrName = makeLumpColumnHeader(assistant, "Name"); do
+	local hdrName = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Nom" or
+		"Name")
+	); do
 		local x, y = hdrId:GetPos()
 		x = x + hdrId:GetWide()
 		hdrName:SetPos(x, y)
@@ -999,7 +1197,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrVersion:SetSize(LUMP_COLUMN_WIDTH_VERSION, LUMP_HEADER_HEIGHT_1 * 2)
 	end
 	
-	local hdrSizeBefore = makeLumpColumnHeader(assistant, "Size"); do
+	local hdrSizeBefore = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Taille" or
+		"Size")
+	); do
 		local x, y = hdrVersion:GetPos()
 		x = x + hdrVersion:GetWide()
 		y = y + LUMP_HEADER_HEIGHT_1
@@ -1007,14 +1208,20 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrSizeBefore:SetSize(LUMP_COLUMN_WIDTH_SIZE, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrCompressedBefore = makeLumpColumnHeader(assistant, "Compressed"); do
+	local hdrCompressedBefore = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Compressé" or
+		"Compressed")
+	); do
 		local x, y = hdrSizeBefore:GetPos()
 		x = x + hdrSizeBefore:GetWide()
 		hdrCompressedBefore:SetPos(x, y)
 		hdrCompressedBefore:SetSize(LUMP_COLUMN_WIDTH_COMPRESSED, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrTopBefore = makeLumpColumnHeader(assistant, "Before"); do
+	local hdrTopBefore = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Avant" or
+		"Before")
+	); do
 		local x, y = hdrVersion:GetPos()
 		x = x + hdrVersion:GetWide()
 		hdrTopBefore:SetPos(x, y)
@@ -1022,7 +1229,10 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrTopBefore:SetSize(w, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrModified = makeLumpColumnHeader(assistant, "Modified"); do
+	local hdrModified = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Modifié" or
+		"Modified")
+	); do
 		local x, y = hdrTopBefore:GetPos()
 		x = x + hdrTopBefore:GetWide()
 		y = y + LUMP_HEADER_HEIGHT_1
@@ -1030,21 +1240,30 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrModified:SetSize(LUMP_COLUMN_WIDTH_MODIFIED, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrSizeAfter = makeLumpColumnHeader(assistant, "Size"); do
+	local hdrSizeAfter = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Taille" or
+		"Size")
+	); do
 		local x, y = hdrModified:GetPos()
 		x = x + hdrModified:GetWide()
 		hdrSizeAfter:SetPos(x, y)
 		hdrSizeAfter:SetSize(LUMP_COLUMN_WIDTH_SIZE, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrCompressedAfter = makeLumpColumnHeader(assistant, "Compressed"); do
+	local hdrCompressedAfter = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Compressé" or
+		"Compressed")
+	); do
 		local x, y = hdrSizeAfter:GetPos()
 		x = x + hdrSizeAfter:GetWide()
 		hdrCompressedAfter:SetPos(x, y)
 		hdrCompressedAfter:SetSize(LUMP_COLUMN_WIDTH_COMPRESSED, LUMP_HEADER_HEIGHT_1)
 	end
 	
-	local hdrTopAfter = makeLumpColumnHeader(assistant, "After"); do
+	local hdrTopAfter = makeLumpColumnHeader(assistant, (
+		hl == "fr" and "Après" or
+		"After")
+	); do
 		local x, y = hdrTopBefore:GetPos()
 		x = x + hdrTopBefore:GetWide()
 		hdrTopAfter:SetPos(x, y)
@@ -1063,18 +1282,27 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		assistant.btnRevertAll = btnRevertAll
 		btnRevertAll:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
 		local y = assistant:GetTall() - MARGIN - BUTTON_HEIGHT
-		local title = "Revert all changes"
+		local title = (
+			hl == "fr" and "Défaire toutes les modifications" or
+			"Revert all changes"
+		)
 		btnRevertAll:SetPos(X_COL_1, y)
 		btnRevertAll:SetText(title)
 		btnRevertAll.DoClick = function(self)
 			Derma_Query(
-				"You will lose every modification.\nContinue?",
+				(
+					hl == "fr" and "Tu perdras toutes les modifications.\nContinuer ?" or
+					"You will lose all modifications.\nContinue?"),
 				title,
-				"Yes", function()
+				(
+					hl == "fr" and "Oui" or
+					"Yes"), function()
 					context:resetOutputListing()
 					refreshLumpsList()
 				end,
-				"Cancel", nil
+				(
+					hl == "fr" and "Annuler" or
+					"Cancel"), nil
 			)
 		end
 	end
@@ -1084,22 +1312,37 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 		local _, y = btnRevertAll:GetPos()
 		btnSave:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
 		btnSave:SetPos(X_COL_2_2, y)
-		btnSave:SetText("Save the modified map")
+		btnSave:SetText(
+			hl == "fr" and "Enregistrer la carte modifiée" or
+			"Save the modified map"
+		)
 		btnSave.DoClick = function(self)
 			DialogFileSelector:new(box, function(selector, folderBase, filenameDst)
 				local asyncData = api.asyncWork(
 					function()
 						Derma_Message(
-							"The modified map has been successfully saved!",
-							"Save as",
-							"Okay"
+							(
+								hl == "fr" and "La carte modifiée a été enregistrée avec succès !" or
+								"The modified map has been successfully saved!"),
+							(
+								hl == "fr" and "Enregistrer sous" or
+								"Save as"),
+							(
+								hl == "fr" and "OK" or
+								"Okay")
 						)
 					end,
 					function(message)
 						Derma_Message(
-							"The following error occurred while saving the modified map:\n" .. message,
-							"Save as",
-							"Cancel"
+							(
+								hl == "fr" and "L'erreur suivante s'est produite durant l'enregistrement de la carte modifiée :\n" or
+								"The following error occurred while saving the modified map:\n") .. message,
+							(
+								hl == "fr" and "Enregistrer sous" or
+								"Save as"),
+							(
+								hl == "fr" and "Annuler" or
+								"Cancel")
 						)
 					end,
 					function(step, stepCount, stepProgress)
@@ -1143,13 +1386,22 @@ Control is given my adding a hook on the event "map_manipulation_tool:moveEntiti
 	end
 end
 
-local helpMessage = [[map_manipulation_tool <mapName>
+local helpMessage = (
+	hl == "fr" and [[map_manipulation_tool <nomCarte>
+   Ouvre une carte dans Momo's Map Manipulation Tool
+   nomCarte: nom de carte ou chemin de fichier .bsp relatif au répertoire garrysmod/ (potentiellement sensible à la casse)
+
+   Exemples :
+   - map_manipulation_tool gm_flatgrass
+   - map_manipulation_tool "maps/gm_flatgrass.bsp"]] or
+	[[map_manipulation_tool <mapName>
    Open a map in Momo's Map Manipulation Tool
    mapName: map name or .bsp file path relative to garrysmod/ (may be case-sensitive)
 
-   Exemples:
+   Examples:
    - map_manipulation_tool gm_flatgrass
    - map_manipulation_tool "maps/gm_flatgrass.bsp"]]
+)
 
 concommand.Add("map_manipulation_tool",
 	function(ply, cmd, args)
