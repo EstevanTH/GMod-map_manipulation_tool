@@ -182,8 +182,10 @@ do
 	-- Functions to encode single-precision floats
 	-- Note: values are clamped naturally below min/max values and explicitly around +/- 0.
 	
+	local bit_band = bit.band
 	local bit_bor = bit.bor
 	local bit_lshift = bit.lshift
+	local math_floor = math.floor
 	local tostring = tostring
 	
 	local specialValues = {
@@ -218,39 +220,47 @@ do
 				float_ = -float_
 			end
 			
-			-- Find the proper exponent:
 			local exponent
-			local substractedPowerOf2
+			local mantissa -- as written (without the explicit '1' bit)
 			local subnormal = false
-			for exponent_ = 127, -126, -1 do
-				-- 1st try, normal value:
-				substractedPowerOf2 = float_ - (2 ^ exponent_)
-				if substractedPowerOf2 >= 0. then -- found 1st '1' bit in mantissa
+			local roundUp
+			
+			-- Find the proper exponent & calculate the mantissa:
+			for exponent_ = 127, -127, -1 do
+				-- -127 is fake and means that it is a subnormal number.
+				if exponent_ == -127 then
+					exponent_ = -126
+					subnormal = true
+				end
+				mantissa = float_ / (2 ^ (exponent_ - 23)) -- as float, including implicit #23 bit
+				roundUp = ((mantissa % 1.) >= 0.5) -- supposedly it is not >=, but it should not matter
+				mantissa = math_floor(mantissa) -- as 24-bit integer (more bits if overflow)
+				if subnormal or mantissa >= 0x800000 then -- found 1st '1' bit in 24-bit mantissa
 					exponent = exponent_
-					float_ = substractedPowerOf2 -- bit #23 (implicit)
 					break
 				end
 			end
-			if not exponent then
-				-- 2nd try, subnormal value:
-				subnormal = true
-				exponent = -126
-			end
 			
-			-- Calculate the mantissa:
-			local mantissa = 0 -- as written (without the explicit '1' bit)
-			for mantissaBit = 22, 0, -1 do
-				local exponent_ = exponent - 23 + mantissaBit -- exponent-1, exponent-2, etc.
-				substractedPowerOf2 = float_ - (2 ^ exponent_)
-				if substractedPowerOf2 >= 0. then -- '1' bit in mantissa
-					mantissa = bit_bor(mantissa, bit_lshift(1, mantissaBit))
-					float_ = substractedPowerOf2 -- bit #mantissaBit
+			-- Correct the mantissa:
+			if mantissa >= 0xffffff then
+				if exponent >= 127 then
+					-- prevent overflow:
+					exponent = 127
+					mantissa = 0xffffff
+				elseif roundUp or mantissa > 0xffffff then
+					-- round-up by incrementing exponent:
+					exponent = exponent + 1
+					mantissa = 0x800000
 				end
+			elseif roundUp then
+				-- round up if appropriate:
+				mantissa = mantissa + 1
 			end
 			if subnormal and mantissa == 0 then
 				-- Clamp tiny non-zero to minimum non-zero value:
 				mantissa = 1
 			end
+			mantissa = bit_band(0x7fffff, mantissa) -- as 23-bit integer, excluding implicit #23 bit
 			
 			-- Calculate the encoded exponent (applying bias):
 			if not subnormal then
@@ -270,7 +280,6 @@ do
 	end
 	
 	function float32_to_le_data(float_)
-		-- TODO - tester
 		return int32_to_le_data(_float32_to_int32(float_))
 	end
 	
@@ -1019,6 +1028,42 @@ local staticPropsToDynamicKeyValues = {
 	["renderamt"] = true,
 	["disableX360"] = true,
 	["modelscale"] = true,
+}
+
+local infoOverlaysKeyValuesOrder = {
+	-- Order in which to list keyvalues & properties for info_overlays's
+	-- Look at BspContext.extractLumpAsText() and doverlay_t.
+	-- Every field from doverlay_t should be listed here!
+	-- Keys are case-sensitive.
+	-- This content is taken from a .vmf file and completed with extra fields (excluding Ofaces items).
+	--"id",
+	--"classname",
+	"Id",
+	"BasisNormal",
+	"BasisOrigin",
+	--"BasisU",
+	--"BasisV",
+	"EndU",
+	"EndV",
+	--"fademindist",
+	"TexInfo",
+	"material",
+	--"sides",
+	"StartU",
+	"StartV",
+	"uv0",
+	"uv1",
+	"uv2",
+	"uv3",
+	"origin",
+	"RenderOrder",
+	"FaceCount",
+}
+
+local infoOverlaysKeyValuesAsComment = {
+	-- Keyvalues / properties for info_overlays's that are just here for information
+	["material"] = true,
+	["origin"] = true,
 }
 
 -- Entity classes that do not belong in the LUMP_ENTITIES to {isGameLump, id}:
@@ -1808,6 +1853,8 @@ local function lumpIndexesOrderedDescFromOffset(lumps)
 	end)
 	return indexes
 end
+
+local OVERLAY_BSP_FACE_COUNT = 64
 
 BspContext = {
 	-- Context that holds a source .bsp file and its information, as well as a destination .bsp file.
@@ -2666,8 +2713,59 @@ BspContext = {
 					table.concat(materialsOffsets)
 				)
 			elseif idText == "LUMP_OVERLAYS" then
-				-- TODO
-				error('Not supported yet: Lump "LUMP_OVERLAYS"')
+				-- Warning: keyvalue keys are all lower-case here!
+				local tonumber = tonumber
+				local util_KeyValuesToTable = util.KeyValuesToTable
+				local bit_bor = bit.bor
+				local bit_lshift = bit.lshift
+				local int16_to_data = self.int16_to_data
+				local int32_to_data = self.int32_to_data
+				local float32_to_data = self.float32_to_data
+				
+				local entitiesText = self:_explodeEntitiesText(text)
+				for k, v in pairs(util_KeyValuesToTable('"Lump attributes"\x0A' .. entitiesText[1], false, true)) do
+					if k == "version" or k == "fourcc" then -- security
+						lumpFieldsToSet[k] = tonumber(v)
+					end
+				end
+				lumpFieldsToSet.version = lumpFieldsToSet.version or 0
+				
+				local payloadPieces = {}
+				for i = 2, #entitiesText do
+					local entityText = entitiesText[i]
+					local overlayKeyValues = util_KeyValuesToTable('"info_overlay #' .. (i - 2) .. '"\x0A' .. entityText, false, false)
+					overlayKeyValues = keyValuesIntoStringValues(overlayKeyValues)
+					if overlayKeyValues then
+						-- Data here must absolutely be the same as in getInfoOverlaysList().
+						payloadPieces[#payloadPieces + 1] = int32_to_data(tonumber(overlayKeyValues["id"])) -- int
+						payloadPieces[#payloadPieces + 1] = int16_to_data(tonumber(overlayKeyValues["texinfo"])) -- short
+						do
+							local FaceCountAndRenderOrder = bit_bor(
+								bit_lshift(tonumber(overlayKeyValues["renderorder"] or 0), 14),
+								tonumber(overlayKeyValues["facecount"] or 0)
+							)
+							payloadPieces[#payloadPieces + 1] = int16_to_data(FaceCountAndRenderOrder) -- unsigned short
+						end
+						for face = 1, OVERLAY_BSP_FACE_COUNT do
+							payloadPieces[#payloadPieces + 1] = int32_to_data(tonumber(overlayKeyValues["ofaces:" .. face] or 0)) -- int
+						end
+						payloadPieces[#payloadPieces + 1] = float32_to_data(tonumber(overlayKeyValues["startu"])) -- float
+						payloadPieces[#payloadPieces + 1] = float32_to_data(tonumber(overlayKeyValues["endu"])) -- float
+						payloadPieces[#payloadPieces + 1] = float32_to_data(tonumber(overlayKeyValues["startv"])) -- float
+						payloadPieces[#payloadPieces + 1] = float32_to_data(tonumber(overlayKeyValues["endv"])) -- float
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["uv0"])) -- Vector
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["uv1"])) -- Vector
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["uv2"])) -- Vector
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["uv3"])) -- Vector
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["basisorigin"])) -- Vector
+						payloadPieces[#payloadPieces + 1] = Vector_to_data(self, Vector(overlayKeyValues["basisnormal"])) -- Vector
+					else
+						print("Could not decode the following info_overlay description:")
+						print(entityText)
+					end
+				end
+				
+				payloadString = table.concat(payloadPieces)
 			else
 				error('Unsupported conversion from text to Lump "' .. tostring(idText or id) .. '"')
 			end
@@ -2765,8 +2863,40 @@ BspContext = {
 				materials[#materials + 1] = "" -- empty line
 				text = table.concat(materials, "\x0A")
 			elseif idText == "LUMP_OVERLAYS" then
-				-- TODO - extraction textuelle avec traduction du matériau (pas id) et erreur si import erroné, format similaire à info_overlay
-				error('Not supported yet: Lump "LUMP_OVERLAYS"')
+				local string_format = string.format
+				local textLines = {}
+				local overlaysKeyValues = self:getInfoOverlaysList(fromDst)
+				
+				-- Lump info:
+				textLines[#textLines + 1] = [[{]]
+				local lumpInfo = self:_getLump(false, lumpNameToLuaIndex["LUMP_OVERLAYS"], fromDst)
+				textLines[#textLines + 1] = string_format('"version" "%u"', lumpInfo.version)
+				textLines[#textLines + 1] = string_format('"fourCC" "%u"', lumpInfo.fourCC)
+				textLines[#textLines + 1] = [[}]]
+				
+				-- Overlays:
+				for i, overlayKeyValues in ipairs(overlaysKeyValues) do
+					textLines[#textLines + 1] = [[{]]
+					textLines[#textLines + 1] = [["classname" "info_overlay"]]
+					for _, key in ipairs(infoOverlaysKeyValuesOrder) do
+						local value = overlayKeyValues[key]
+						if value ~= nil then
+							if infoOverlaysKeyValuesAsComment[key] then
+								textLines[#textLines + 1] = string_format('//%s %s', anyToKeyValueString(key), anyToKeyValueString(value))
+							else
+								textLines[#textLines + 1] = string_format('%s %s', anyToKeyValueString(key), anyToKeyValueString(value))
+							end
+						end
+					end
+					for j, face in ipairs(overlayKeyValues["Ofaces"]) do
+						textLines[#textLines + 1] = string_format('"Ofaces:%u" "%d"', j, face)
+					end
+					textLines[#textLines + 1] = [[}]]
+				end
+				
+				-- Finish:
+				textLines[#textLines + 1] = [[]] -- empty line
+				text = table.concat(textLines, "\x0A")
 			else
 				error('Unsupported conversion to text from Lump "' .. tostring(idText or id) .. '"')
 			end
@@ -2798,14 +2928,16 @@ BspContext = {
 			print("No sprp game lump: no prop_static's in the map!")
 			return {}, {}, {}, {}
 		end
-		local lumpStream = BytesIO:new(payload:readAll(), "rb") -- TODO - can be optimized by reading in-place
+		-- local lumpStream = BytesIO:new(payload:readAll(), "rb")
+		payload:seekToPayload()
+		local lumpStream = payload.streamSrc
 		
 		-- Parsing StaticPropDictLump_t:
 		-- Original keys kept because used as a dictionary.
 		local staticPropDictLump = {}
 		local dictEntries = data_to_integer(lumpStream:Read(4))
 		for i = 0, dictEntries - 1 do
-			local _, _, model = string_find(lumpStream:Read(128), "^([^%z]+)") -- TODO - corriger wiki
+			local _, _, model = string_find(lumpStream:Read(128), "^([^%z]*)")
 			staticPropDictLump[i] = model
 		end
 		
@@ -2984,6 +3116,122 @@ BspContext = {
 		return staticPropsKeyValues, staticPropLeafLump, staticPropLumps, staticPropDictLump
 	end,
 	
+	getInfoOverlaysList = function(self, fromDst)
+		-- Extract all information as a list of dictionaries with info_overlay keyvalues
+		-- Note: the number of info_overlay's is determined from the payload length.
+		
+		local string_format = string.format
+		local data_to_integer = self.data_to_integer
+		local data_to_float32 = self.data_to_float32
+		local bit_band = bit.band
+		local bit_rshift = bit.rshift
+		
+		local lumpInfo = self:_getLump(false, lumpNameToLuaIndex["LUMP_OVERLAYS"], fromDst)
+		local payload = lumpInfo and lumpInfo.payload or nil
+		if payload == nil then
+			print("No LUMP_OVERLAYS lump: no info_overlay's in the map!")
+			return {}
+		end
+		local texinfosFields = self:_getTexinfoList(fromDst)
+		local texdatasFields = self:_getTexdataList(fromDst)
+		local materials = self:getMaterialsList(fromDst)
+		payload:seekToPayload() -- after loading other lump payloads
+		local lumpStream = payload.streamSrc
+		local lumpLength = payload.lumpInfoSrc.filelen
+		
+		local overlaysKeyValues = {}
+		do
+			-- count cannot be 0 because it would be a null lump.
+			local startPos = lumpStream:Tell()
+			local i, count = 1, 1
+			while i <= count do
+				-- IMPORTANT !! Additions to this must be updated in infoOverlaysKeyValuesOrder!
+				local info = {}
+				info["Id"] = data_to_integer(lumpStream:Read(4)) -- int		[different from .vmf]
+				do
+					local material
+					local TexInfo = data_to_integer(lumpStream:Read(2)) -- short
+					info["TexInfo"] = TexInfo
+					local texinfoFields = texinfosFields[TexInfo + 1]
+					if texinfoFields ~= nil then
+						local texdata = texinfoFields["texdata"]
+						local texdataFields = texdatasFields[texdata + 1]
+						if texdataFields ~= nil then
+							local nameStringTableID = texdataFields["nameStringTableID"]
+							material = materials[nameStringTableID + 1]
+							if material == nil then
+								print(string_format(
+									"info_overlay #%u has an out-of-range material, dtexdata_t.nameStringTableID=%u, texinfo_t.texdata=%u, doverlay_t.TexInfo=%u",
+									i,
+									nameStringTableID,
+									texdata,
+									TexInfo
+								))
+							end
+						else
+							print(string_format(
+								"info_overlay #%u has an out-of-range texdata, texinfo_t.texdata=%u, doverlay_t.TexInfo=%u",
+								i,
+								texdata,
+								TexInfo
+							))
+						end
+					else
+						print(string_format(
+							"info_overlay #%u has an out-of-range TexInfo, doverlay_t.TexInfo=%u",
+							i,
+							TexInfo
+						))
+					end
+					if material == nil then
+						material = "**OUT-OF-RANGE:" .. TexInfo
+					end
+					info["material"] = material
+				end
+				do
+					local FaceCountAndRenderOrder = data_to_integer(lumpStream:Read(2)) -- unsigned short
+					info["RenderOrder"] = bit_rshift(FaceCountAndRenderOrder, 14)
+					info["FaceCount"] = bit_band(FaceCountAndRenderOrder, 0x3FFF)
+				end
+				do
+					local Ofaces = {}
+					for j = 1, OVERLAY_BSP_FACE_COUNT do
+						Ofaces[j] = data_to_integer(lumpStream:Read(4)) -- int
+					end
+					info["Ofaces"] = Ofaces
+				end
+				info["StartU"] = data_to_float32(lumpStream:Read(4)) -- float
+				info["EndU"] = data_to_float32(lumpStream:Read(4)) -- float
+				info["StartV"] = data_to_float32(lumpStream:Read(4)) -- float
+				info["EndV"] = data_to_float32(lumpStream:Read(4)) -- float
+				info["uv0"] = decode_Vector(self, lumpStream) -- Vector
+				info["uv1"] = decode_Vector(self, lumpStream) -- Vector
+				info["uv2"] = decode_Vector(self, lumpStream) -- Vector
+				info["uv3"] = decode_Vector(self, lumpStream) -- Vector
+				do
+					local Origin = decode_Vector(self, lumpStream) -- Vector
+					info["BasisOrigin"] = Origin
+					info["origin"] = Origin
+				end
+				info["BasisNormal"] = decode_Vector(self, lumpStream) -- Vector
+				overlaysKeyValues[i] = info
+				
+				if count == 1 then
+					-- Determine the actual count:
+					local overlayLength = lumpStream:Tell() - startPos
+					count = lumpLength / overlayLength
+					if count % 1 ~= 0 then
+						print("The LUMP_OVERLAYS does not end at the end of an info_overlay! Unsupported lump format?")
+					end
+					count = math.floor(count)
+				end
+				i = i + 1
+			end
+		end
+		
+		return overlaysKeyValues
+	end,
+	
 	getMaterialsList = function(self, fromDst)
 		local string_find = string.find
 		
@@ -3016,6 +3264,121 @@ BspContext = {
 		end
 		
 		return materials
+	end,
+	
+	_getTexdataList = function(self, fromDst)
+		-- Decode dtexdata_t's contained in the LUMP_TEXDATA
+		-- The code is similar to that of getInfoOverlaysList().
+		-- Warning: this function alters the cursor of the file descriptor.
+		
+		local data_to_integer = self.data_to_integer
+		
+		local lumpInfo = self:_getLump(false, lumpNameToLuaIndex["LUMP_TEXDATA"], fromDst)
+		local payload = lumpInfo and lumpInfo.payload or nil
+		if payload == nil then
+			print("No LUMP_TEXDATA lump: no dtexdata_t's in the map!")
+			return {}
+		end
+		payload:seekToPayload()
+		local lumpStream = payload.streamSrc
+		local lumpLength = payload.lumpInfoSrc.filelen
+		
+		local texdatasFields = {}
+		do
+			-- count cannot be 0 because it would be a null lump.
+			local startPos = lumpStream:Tell()
+			local i, count = 1, 1
+			while i <= count do
+				local fields = {}
+				fields["reflectivity"] = decode_Vector(self, lumpStream) -- Vector
+				fields["nameStringTableID"] = data_to_integer(lumpStream:Read(4)) -- int
+				fields["width"] = data_to_integer(lumpStream:Read(4)) -- int
+				fields["height"] = data_to_integer(lumpStream:Read(4)) -- int
+				fields["view_width"] = data_to_integer(lumpStream:Read(4)) -- int
+				fields["view_height"] = data_to_integer(lumpStream:Read(4)) -- int
+				texdatasFields[i] = fields
+				
+				if count == 1 then
+					-- Determine the actual count:
+					local texdataLength = lumpStream:Tell() - startPos
+					count = lumpLength / texdataLength
+					if count % 1 ~= 0 then
+						print("The LUMP_TEXDATA does not end at the end of a dtexdata_t! Unsupported lump format?")
+					end
+					count = math.floor(count)
+				end
+				i = i + 1
+			end
+		end
+		
+		return texdatasFields
+	end,
+	
+	_getTexinfoList = function(self, fromDst)
+		-- Decode texinfo_t's contained in the LUMP_TEXINFO
+		-- The code is similar to that of _getTexdataList().
+		-- Warning: this function alters the cursor of the file descriptor.
+		
+		local data_to_integer = self.data_to_integer
+		local data_to_float32 = self.data_to_float32
+		
+		local lumpInfo = self:_getLump(false, lumpNameToLuaIndex["LUMP_TEXINFO"], fromDst)
+		local payload = lumpInfo and lumpInfo.payload or nil
+		if payload == nil then
+			print("No LUMP_TEXINFO lump: no texinfo_t's in the map!")
+			return {}
+		end
+		payload:seekToPayload()
+		local lumpStream = payload.streamSrc
+		local lumpLength = payload.lumpInfoSrc.filelen
+		
+		local texinfosFields = {}
+		do
+			-- count cannot be 0 because it would be a null lump.
+			local startPos = lumpStream:Tell()
+			local i, count = 1, 1
+			while i <= count do
+				local fields = {}
+				do
+					local textureVecs = {}
+					for j = 1, 4 do
+						local textureVecsJ = {}
+						for k = 1, 2 do
+							textureVecsJ[k] = data_to_float32(lumpStream:Read(4)) -- float
+						end
+						textureVecs[j] = textureVecsJ
+					end
+					fields["textureVecs"] = textureVecs
+				end
+				do
+					local lightmapVecs = {}
+					for j = 1, 4 do
+						local lightmapVecsJ = {}
+						for k = 1, 2 do
+							lightmapVecsJ[k] = data_to_float32(lumpStream:Read(4)) -- float
+						end
+						lightmapVecs[j] = lightmapVecsJ
+					end
+					fields["lightmapVecs"] = lightmapVecs
+				end
+				fields["flags"] = data_to_integer(lumpStream:Read(4)) -- int
+				fields["texdata"] = data_to_integer(lumpStream:Read(4)) -- int
+				texinfosFields[i] = fields
+				
+				if count == 1 then
+					-- Determine the actual count:
+					local texinfoLength = lumpStream:Tell() - startPos
+					count = lumpLength / texinfoLength
+					if count % 1 ~= 0 then
+						print("The LUMP_TEXINFO does not end at the end of a texinfo_t! Unsupported lump format?")
+					end
+					count = math.floor(count)
+				end
+				i = i + 1
+			end
+		end
+		
+		return texinfosFields
 	end,
 	
 	getPresentEntityClasses = function(self, fromDst)
