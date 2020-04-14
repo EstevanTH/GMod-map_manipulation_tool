@@ -11,9 +11,46 @@ local function run_test_for_lump(context, lumpName)
 	local textBefore = context:extractLumpAsText(isGameLump, id, false)
 	context:setupLumpFromText(isGameLump, id, textBefore)
 	local textAfter = context:extractLumpAsText(isGameLump, id, true)
-	if textAfter ~= textBefore then
-		MsgN("FAIL")
-	else
+	local finished = false
+	
+	-- Text comparison:
+	if not finished then
+		if textAfter ~= textBefore then
+			-- Test of every line with tolerance for slight floating-point numbers variation:
+			local LINE_PATTERN = "([^\x0A]*)\x0A"
+			local NUMBER_PATTERN = '^[%s]*"[^"]*"[%s]+"([0-9%.]+)"[%s]*$' -- number as a keyvalue value
+			local iteratorBefore = string.gmatch(textBefore, LINE_PATTERN)
+			local iteratorAfter  = string.gmatch(textAfter,  LINE_PATTERN)
+			for lineBefore in iteratorBefore do
+				local lineAfter = iteratorAfter()
+				if lineBefore ~= lineAfter then
+					local lineOkay = false
+					print('\t\t- lineBefore = "' .. lineBefore .. '"')
+					print('\t\t  lineAfter  = "' .. lineAfter  .. '"')
+					local numberBefore = tonumber(string.match(lineBefore, NUMBER_PATTERN))
+					local numberAfter  = numberBefore and tonumber(string.match(lineAfter, NUMBER_PATTERN))
+					if numberBefore ~= nil and numberAfter ~= nil then
+						-- Number variation tolerance:
+						if math.abs((numberAfter - numberBefore) / numberBefore) < 0.001 then
+							-- Less than 0.1% of difference, accepted:
+							lineOkay = true
+						end
+						if numberAfter > numberBefore then
+							print("numberAfter > numberBefore")
+						end
+					end
+					if not lineOkay then
+						finished = true
+						MsgN("FAIL")
+						break
+					end
+				end
+			end
+		end
+	end
+	
+	-- Binary comparison:
+	if not finished then
 		local binarySuccess = true
 		if lumpName == "sprp" then
 			-- The binaries never match especially because of models given in a different order.
@@ -76,9 +113,13 @@ local function run_test_for_lump(context, lumpName)
 		end
 		if not binarySuccess then
 			MsgN("BINARY FAIL")
-		else
-			MsgN("OK")
+			finished = true
 		end
+	end
+	
+	-- Okay good:
+	if not finished then
+		MsgN("OK")
 	end
 end
 
@@ -113,11 +154,11 @@ local function run_test()
 		"LUMP_ENTITIES",
 		"sprp",
 		"LUMP_TEXDATA_STRING_DATA",
-		-- "LUMP_OVERLAYS",
+		"LUMP_OVERLAYS",
 	}
 	
 	for _, map in ipairs(maps) do
-		print("Testing map", map)
+		print("\nTesting map", map)
 		local success, message = pcall(run_test_for_map, map)
 		if not success then
 			print("", message)
