@@ -760,8 +760,6 @@ end
 
 local anyToKeyValueString
 do
-	-- util.TableToKeyValues() changes the case of a few key names, using this instead!
-	-- "maxdxlevel" -> "MaxDxLevel"
 	local string_gsub = string.gsub
 	local tostring = tostring
 	local isvector = isvector
@@ -798,6 +796,18 @@ do
 end
 -- Solution: preserveKeyCase = false
 ]]
+
+local keyValuesTextKeepNumberPrecision
+do
+	-- Avoid automatically decoding numbers in the text by adding a space after each quoted number
+	-- This is necessary because util.KeyValuesToTable() automatically decodes numbers as either int or float32!
+	-- Reading back Lua numbers (float64) losts precision because the conversion rounds down.
+	local string_gsub = string.gsub
+	function keyValuesTextKeepNumberPrecision(text)
+		text = string_gsub(text, '"([0-9]+%.?[0-9]*)"', '"%1 "')
+		return text
+	end
+end
 
 local keyValuesIntoStringValues
 do
@@ -2531,8 +2541,8 @@ BspContext = {
 				local staticPropsKeyValues = {}
 				for i = 3, #entitiesText do
 					local entityText = entitiesText[i]
+					entityText = keyValuesTextKeepNumberPrecision(entityText)
 					local propKeyValues = util_KeyValuesToTable('"prop_static #' .. (i - 2) .. '"\x0A' .. entityText, false, false)
-					propKeyValues = keyValuesIntoStringValues(propKeyValues)
 					if propKeyValues then
 						staticPropsKeyValues[#staticPropsKeyValues + 1] = propKeyValues
 						local model = propKeyValues["model"]
@@ -2733,8 +2743,8 @@ BspContext = {
 				local payloadPieces = {}
 				for i = 2, #entitiesText do
 					local entityText = entitiesText[i]
+					entityText = keyValuesTextKeepNumberPrecision(entityText)
 					local overlayKeyValues = util_KeyValuesToTable('"info_overlay #' .. (i - 2) .. '"\x0A' .. entityText, false, false)
-					overlayKeyValues = keyValuesIntoStringValues(overlayKeyValues)
 					if overlayKeyValues then
 						-- Data here must absolutely be the same as in getInfoOverlaysList().
 						payloadPieces[#payloadPieces + 1] = int32_to_data(tonumber(overlayKeyValues["id"])) -- int
