@@ -187,6 +187,10 @@ do
 	local bit_lshift = bit.lshift
 	local math_floor = math.floor
 	local tostring = tostring
+	local string_format = string.format
+	local string_match = string.match
+	local tonumber = tonumber
+	local math_max = math.max
 	
 	local specialValues = {
 		-- To ensure proper conversion, the string representation is used.
@@ -320,6 +324,31 @@ do
 		print(data_to_float32_be(float32_to_be_data(-5e+120)))
 	end
 	]]
+	
+	function float32_to_decimal_string(float_, decimals)
+		-- float_: number to convert
+		-- decimals: number of expected decimals by default (for Vector & Angle), or nil for automatic precision, ignored for large numbers
+		-- Convert a single-precision number into a string with its decimal representation (like %f), with guaranteed precision.
+		-- For precision: 8 significant digits are required (2^24), +1 because maybe needed, +1 for extended precision just-in-case.
+		local text
+		local base, powerOf10 = string_match(string_format("%.9e", float_), "^([%d%.%-%+ ]+)e([%d%-%+ ]+)$")
+		base, powerOf10 = tonumber(base), tonumber(powerOf10)
+		if base and powerOf10 then
+			if powerOf10 < 9 then
+				-- usual case:
+				local minimumDecimals = 9 - powerOf10
+				decimals = decimals and math_max(decimals, minimumDecimals) or minimumDecimals
+			else
+				-- at least 10 significant digits before decimal point:
+				decimals = 0 -- shorter ouput
+			end
+			text = string_format("%." .. decimals .. "f", float_)
+		else
+			-- special number:
+			text = tostring(float_)
+		end
+		return text
+	end
 end
 
 do
@@ -372,16 +401,26 @@ do
 	
 	function Vector_to_string(from)
 		-- Very big values are truncated with Vector:__tostring()!
+		-- There is a loss of precision for small values Vector:__tostring().
 		-- Note: Vector() probably handles long strings.
 		-- TODO - supporter Vector chelous encodés bruts
-		return string_format("%0.6f %0.6f %0.6f", from.x, from.y, from.z)
+		return string_format("%s %s %s",
+			float32_to_decimal_string(from.x, 6),
+			float32_to_decimal_string(from.y, 6),
+			float32_to_decimal_string(from.z, 6)
+		)
 	end
 	
 	function Angle_to_string(from)
 		-- Very big values are truncated with Angle:__tostring()!
+		-- There is a loss of precision for small values Angle:__tostring().
 		-- Note: Angle() probably handles long strings.
 		-- TODO - supporter Angle chelous encodés bruts
-		return string_format("%0.3f %0.3f %0.3f", from.p, from.y, from.r)
+		return string_format("%s %s %s",
+			float32_to_decimal_string(from.p, 3),
+			float32_to_decimal_string(from.y, 3),
+			float32_to_decimal_string(from.r, 3)
+		)
 	end
 end
 
@@ -764,6 +803,8 @@ do
 	local tostring = tostring
 	local isvector = isvector
 	local isangle = isangle
+	local isnumber = isnumber
+	local string_format = string.format
 	
 	local replacements = {
 		["\0"] = "",
@@ -774,6 +815,18 @@ do
 			return '"' .. Vector_to_string(initial) .. '"'
 		elseif isangle(initial) then
 			return '"' .. Angle_to_string(initial) .. '"'
+		elseif isnumber(initial) then
+			if initial % 1 == 0 and initial >= -2147483648 and initial <= 4294967295 then
+				-- int32 value:
+				if initial >= 0 then
+					return string_format('"%u"', initial)
+				else
+					return string_format('"%d"', initial)
+				else
+			else
+				-- float value:
+				return '"' .. float32_to_decimal_string(initial) .. '"'
+			end
 		else
 			return '"' .. string_gsub(tostring(initial), '.', replacements) .. '"'
 		end
