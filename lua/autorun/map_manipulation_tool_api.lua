@@ -822,7 +822,7 @@ do
 					return string_format('"%u"', initial)
 				else
 					return string_format('"%d"', initial)
-				else
+				end
 			else
 				-- float value:
 				return '"' .. float32_to_decimal_string(initial) .. '"'
