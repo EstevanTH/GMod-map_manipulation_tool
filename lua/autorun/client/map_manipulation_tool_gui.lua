@@ -3,14 +3,17 @@ print("map_manipulation_tool_gui")
 local api = map_manipulation_tool_api
 local surface = surface
 
+local reloadTranslations -- function defined later
 local hl = GetConVar("gmod_language"):GetString()
 cvars.AddChangeCallback("gmod_language", function(convar, oldValue, newValue)
 	hl = newValue
+	reloadTranslations()
 end, "map_manipulation_tool_gui")
 
 local TITLE_BAR_THICKNESS = 24
 local SCROLL_BAR_THICKNESS = 15
 local BUTTON_HEIGHT = 24
+local STATUS_BAR_HEIGHT = 16
 local MARGIN = 8
 local WIDTH = 640
 local WIDTH_1_1 = (WIDTH - MARGIN * 2)
@@ -53,6 +56,215 @@ local ALIGN_MIDDLE_CENTER = 5
 local ALIGN_MIDDLE_RIGHT = 6
 
 local CLASS_GUI_LUMP_ROW = "DLabel"
+
+
+local lumpTooltips -- Lua id -> text
+function reloadTranslations()
+	-- Some descriptions are borrowed from https://developer.valvesoftware.com/wiki/Source_BSP_File_Format
+	local luaIdOf = api.getLumpIdFromLumpName
+	lumpTooltips = {}
+	lumpTooltips[luaIdOf("LUMP_ENTITIES")] =
+		hl == "fr" and
+		[[Contient les entités, à l'exclusion des entités internes]] or
+		[[Contains entities, excluding internal entities]]
+	lumpTooltips[luaIdOf("LUMP_PLANES")] =
+		[[Plane array]]
+	lumpTooltips[luaIdOf("LUMP_TEXDATA")] =
+		hl == "fr" and
+		[[Informations sur les textures utilisées dans la carte, les info_overlays et les entités brush]] or
+		[[Information about textures used in the map, in info_overlay's and in brush entities]]
+	lumpTooltips[luaIdOf("LUMP_VERTEXES")] =
+		[[Vertex array]]
+	lumpTooltips[luaIdOf("LUMP_VISIBILITY")] =
+		[[Compressed visibility bit arrays]]
+	lumpTooltips[luaIdOf("LUMP_NODES")] =
+		[[BSP tree nodes]]
+	lumpTooltips[luaIdOf("LUMP_TEXINFO")] =
+		hl == "fr" and
+		[[Informations sur les textures des faces de la carte, les info_overlays et les entités brush]] or
+		[[Information about the textures of faces of the map, the info_overlay's and the brush entities]]
+	lumpTooltips[luaIdOf("LUMP_FACES")] =
+		[[Face array]]
+	lumpTooltips[luaIdOf("LUMP_LIGHTING")] =
+		hl == "fr" and
+		[[Échantillons de lightmap (sans HDR)]] or
+		[[Lightmap samples (without HDR)]]
+	lumpTooltips[luaIdOf("LUMP_OCCLUSION")] =
+		[[Occlusion polygons and vertices]]
+	lumpTooltips[luaIdOf("LUMP_LEAFS")] =
+		[[BSP tree leaf nodes]]
+	lumpTooltips[luaIdOf("LUMP_FACEIDS")] =
+		[[Correlates between dfaces and Hammer face IDs. Also used as random seed for detail prop placement.]]
+	lumpTooltips[luaIdOf("LUMP_EDGES")] =
+		[[Edge array]]
+	lumpTooltips[luaIdOf("LUMP_SURFEDGES")] =
+		[[Index of edges]]
+	lumpTooltips[luaIdOf("LUMP_MODELS")] =
+		[[Brush models (geometry of brush entities)]]
+	lumpTooltips[luaIdOf("LUMP_WORLDLIGHTS")] =
+		hl == "fr" and
+		[[Lumières internes du monde converties depuis le LUMP_ENTITIES (sans HDR)]] or
+		[[Internal world lights converted from the LUMP_ENTITIES (without HDR)]]
+	lumpTooltips[luaIdOf("LUMP_LEAFFACES")] =
+		[[Index to faces in each leaf]]
+	lumpTooltips[luaIdOf("LUMP_LEAFBRUSHES")] =
+		[[Index to brushes in each leaf]]
+	lumpTooltips[luaIdOf("LUMP_BRUSHES")] =
+		[[Brush array]]
+	lumpTooltips[luaIdOf("LUMP_BRUSHSIDES")] =
+		[[Brushside array]]
+	lumpTooltips[luaIdOf("LUMP_AREAS")] =
+		[[Area array]]
+	lumpTooltips[luaIdOf("LUMP_AREAPORTALS")] =
+		[[Portals between areas]]
+	lumpTooltips[luaIdOf("LUMP_PORTALS")] =
+[[(Multiple matches)
+LUMP_PORTALS:
+Confirm: Polygons defining the boundary between adjacent leaves?
+LUMP_PROPCOLLISION:
+Static props convex hull lists]]
+	lumpTooltips[luaIdOf("LUMP_CLUSTERS")] =
+[[(Multiple matches)
+LUMP_CLUSTERS:
+Leaves that are enterable by the player
+LUMP_PROPHULLS:
+Static prop convex hulls]]
+	lumpTooltips[luaIdOf("LUMP_PORTALVERTS")] =
+[[(Multiple matches)
+LUMP_PORTALVERTS:
+Vertices of portal polygons
+LUMP_PROPHULLVERTS:
+Static prop collision vertices]]
+	lumpTooltips[luaIdOf("LUMP_CLUSTERPORTALS")] =
+[[(Multiple matches)
+LUMP_CLUSTERPORTALS:
+Confirm: Polygons defining the boundary between adjacent clusters?
+LUMP_PROPTRIS:
+Static prop per hull triangle index start/count]]
+	lumpTooltips[luaIdOf("LUMP_DISPINFO")] =
+		[[Displacement surface array]]
+	lumpTooltips[luaIdOf("LUMP_ORIGINALFACES")] =
+		[[Brush faces array before splitting]]
+	lumpTooltips[luaIdOf("LUMP_PHYSDISP")] =
+		[[Displacement physics collision data]]
+	lumpTooltips[luaIdOf("LUMP_PHYSCOLLIDE")] =
+		[[Physics collision data]]
+	lumpTooltips[luaIdOf("LUMP_VERTNORMALS")] =
+		[[Face plane normals]]
+	lumpTooltips[luaIdOf("LUMP_VERTNORMALINDICES")] =
+		[[Face plane normal index array]]
+	lumpTooltips[luaIdOf("LUMP_DISP_LIGHTMAP_ALPHAS")] =
+		[[Displacement lightmap alphas]]
+	lumpTooltips[luaIdOf("LUMP_DISP_VERTS")] =
+		[[Vertices of displacement surface meshes]]
+	lumpTooltips[luaIdOf("LUMP_DISP_LIGHTMAP_SAMPLE_POSITIONS")] =
+		[[Displacement lightmap sample positions]]
+	lumpTooltips[luaIdOf("LUMP_GAME_LUMP")] =
+		hl == "fr" and
+		[[Contient les lumps qui ne sont pas inclus dans la numérotation initiale]] or
+		[[Contains the lumps that are not included in the initial numbering]]
+	lumpTooltips[luaIdOf("LUMP_LEAFWATERDATA")] =
+		[[Data for leaf nodes that are inside water]]
+	lumpTooltips[luaIdOf("LUMP_PRIMITIVES")] =
+		[[Water polygon data]]
+	lumpTooltips[luaIdOf("LUMP_PRIMVERTS")] =
+		[[Water polygon vertices]]
+	lumpTooltips[luaIdOf("LUMP_PRIMINDICES")] =
+		[[Water polygon vertex index array]]
+	lumpTooltips[luaIdOf("LUMP_PAKFILE")] =
+		hl == "fr" and
+		[[Archive .zip sans compression montée dans le jeu, contenant les fichiers embarqués dans la carte]] or
+		[[.zip archive without compression mounted in the game, containing the files embedded in the map]]
+	lumpTooltips[luaIdOf("LUMP_CLIPPORTALVERTS")] =
+		[[Clipped portal polygon vertices]]
+	lumpTooltips[luaIdOf("LUMP_CUBEMAPS")] =
+		[[env_cubemap location array]]
+	lumpTooltips[luaIdOf("LUMP_TEXDATA_STRING_DATA")] =
+		hl == "fr" and
+[[Contient les noms de matériaux (sans extension) utilisés dans la carte, les info_overlays et les entités brush
+L'exploitation du format texte dépend du LUMP_TEXDATA_STRING_TABLE.]] or
+[[Contains the material names (without extension) used in the map, in info_overlay's and in brush entities
+Utilizing the text format depends on the LUMP_TEXDATA_STRING_TABLE.]]
+	lumpTooltips[luaIdOf("LUMP_TEXDATA_STRING_TABLE")] =
+		hl == "fr" and
+		[[Associe séquentiellement chaque n° de matériau à sa position dans le LUMP_TEXDATA_STRING_DATA]] or
+		[[Associates sequentially each material number into its position in the LUMP_TEXDATA_STRING_DATA]]
+	lumpTooltips[luaIdOf("LUMP_OVERLAYS")] =
+		hl == "fr" and
+[[Contient les entités info_overlay
+L'exploitation du format texte dépend du LUMP_TEXINFO, du LUMP_TEXDATA, du LUMP_TEXDATA_STRING_TABLE et du LUMP_TEXDATA_STRING_DATA.]] or
+[[Contains info_overlay entities
+Utilizing the text format depends on the LUMP_TEXINFO, the LUMP_TEXDATA, the LUMP_TEXDATA_STRING_TABLE and the LUMP_TEXDATA_STRING_DATA.]]
+	lumpTooltips[luaIdOf("LUMP_LEAFMINDISTTOWATER")] =
+		[[Distance from leaves to water]]
+	lumpTooltips[luaIdOf("LUMP_FACE_MACRO_TEXTURE_INFO")] =
+		[[Macro texture info for faces]]
+	lumpTooltips[luaIdOf("LUMP_DISP_TRIS")] =
+		[[Displacement surface triangles]]
+	lumpTooltips[luaIdOf("LUMP_PHYSCOLLIDESURFACE")] =
+[[(Multiple matches)
+LUMP_PHYSCOLLIDESURFACE:
+Compressed win32-specific Havok terrain surface collision data
+LUMP_PROP_BLOB:
+Static prop triangle and string data]]
+	lumpTooltips[luaIdOf("LUMP_WATEROVERLAYS")] =
+		[[Confirm: info_overlay's on water faces?]]
+	lumpTooltips[luaIdOf("LUMP_LEAF_AMBIENT_INDEX_HDR")] =
+[[(Multiple matches)
+LUMP_LEAF_AMBIENT_INDEX_HDR:
+Index of LUMP_LEAF_AMBIENT_LIGHTING_HDR
+LUMP_LIGHTMAPPAGES:
+Alternate lightdata implementation for Xbox]]
+	lumpTooltips[luaIdOf("LUMP_LEAF_AMBIENT_INDEX")] =
+[[(Multiple matches)
+LUMP_LEAF_AMBIENT_INDEX:
+Index of LUMP_LEAF_AMBIENT_LIGHTING
+LUMP_LIGHTMAPPAGEINFOS:
+Alternate lightdata indices for Xbox]]
+	lumpTooltips[luaIdOf("LUMP_LIGHTING_HDR")] =
+		hl == "fr" and
+		[[Échantillons de lightmap (avec HDR)]] or
+		[[Lightmap samples (with HDR)]]
+	lumpTooltips[luaIdOf("LUMP_WORLDLIGHTS_HDR")] =
+		hl == "fr" and
+		[[Lumières internes du monde converties depuis le LUMP_ENTITIES (avec HDR)]] or
+		[[Internal world lights converted from the LUMP_ENTITIES (with HDR)]]
+	lumpTooltips[luaIdOf("LUMP_LEAF_AMBIENT_LIGHTING_HDR")] =
+		hl == "fr" and
+		[[Échantillons de lumière ambiante par leaf (HDR)]] or
+		[[Per-leaf ambient light samples (HDR)]]
+	lumpTooltips[luaIdOf("LUMP_LEAF_AMBIENT_LIGHTING")] =
+		hl == "fr" and
+		[[Échantillons de lumière ambiante par leaf (LDR)]] or
+		[[Per-leaf ambient light samples (LDR)]]
+	lumpTooltips[luaIdOf("LUMP_XZIPPAKFILE")] =
+		[[XZip version of pak file for Xbox]]
+	lumpTooltips[luaIdOf("LUMP_FACES_HDR")] =
+		[[HDR maps may have different face data]]
+	lumpTooltips[luaIdOf("LUMP_MAP_FLAGS")] =
+		[[Extended level-wide flags]]
+	lumpTooltips[luaIdOf("LUMP_OVERLAY_FADES")] =
+		[[Fade distances for overlays]]
+	lumpTooltips[luaIdOf("LUMP_OVERLAY_SYSTEM_LEVELS")] =
+		[[System level settings (min/max CPU & GPU to render this overlay)]]
+	lumpTooltips[luaIdOf("LUMP_PHYSLEVEL")] =
+		[[LUMP_PHYSLEVEL]]
+	lumpTooltips[luaIdOf("LUMP_DISP_MULTIBLEND")] =
+		[[Displacement multiblend info]]
+	lumpTooltips[luaIdOf("sprp")] =
+		hl == "fr" and
+		[[Contient les entités prop_static]] or
+		[[Contains prop_static entities]]
+	lumpTooltips[luaIdOf("dprp")] =
+		hl == "fr" and
+		[[Contient les entités prop_detail]] or
+		[[Contains prop_detail entities]]
+	lumpTooltips[luaIdOf("dplt")] =
+		[[dplt]]
+	lumpTooltips[luaIdOf("dplh")] =
+		[[dplh]]
+end
+reloadTranslations()
 
 local DialogFileSelector
 do
@@ -843,6 +1055,12 @@ do
 		]]
 		row.info = info
 		row.context = context
+		do
+			local tooltip = lumpTooltips[info.luaId]
+			if tooltip then
+				row:SetTooltip(tooltip)
+			end
+		end
 		
 		local textColor = LUMP_ROW_TXCOLOR
 		if info.modified or info.deleted then
@@ -961,10 +1179,51 @@ do
 		end
 		x = x + w
 		
-		-- TODO - info-bulle pour chaque lump
-		
 		return row
 	end
+end
+
+local function statusBar_Think(self)
+	local newText
+	local nextFromToolTipText
+	do
+		local tooltipLookup = false
+		for i = 1, 3 do
+			if tooltipLookup == false then
+				tooltipLookup = vgui.GetHoveredPanel()
+			else
+				tooltipLookup = IsValid(tooltipLookup) and tooltipLookup:GetParent()
+			end
+			if IsValid(tooltipLookup) then
+				local tooltip = tooltipLookup:GetTooltip()
+				if tooltip and #tooltip ~= 0 then
+					if tooltip ~= self.fromToolTipText then
+						newText = string.gsub(tooltip, "\r?\n", " ")
+					else
+						newText = false -- no value change
+					end
+					nextFromToolTipText = tooltip -- cache to avoid treating end-of-lines again
+					break
+				end
+			end
+		end
+	end
+	if newText == nil and gui.IsGameUIVisible() then
+		newText = (
+			hl == "fr" and "Prêt — Pour afficher les info-bulles, fermez la Game UI en pressant Échap." or
+			"Ready — To display tooltips, close the Game UI by pressing Esc."
+		)
+	end
+	if newText == nil then
+		newText = (
+			hl == "fr" and "Prêt" or
+			"Ready"
+		)
+	end
+	if newText then
+		self:SetText(newText)
+	end
+	self.fromToolTipText = nextFromToolTipText
 end
 
 local function lumpsList_Paint(self, w,h)
@@ -975,6 +1234,7 @@ local function lumpsList_Paint(self, w,h)
 end
 
 local function openAssistant(mapName)
+	api = map_manipulation_tool_api -- recover after API syntax error at startup
 	local extension = string.lower(string.sub(mapName, -4, -1))
 	if extension ~= ".bsp" and extension ~= ".dat" and string.find(mapName, "[\\/]", 1) == nil then
 		mapName = "maps/" .. mapName .. ".bsp"
@@ -1053,6 +1313,10 @@ local function openAssistant(mapName)
 			hl == "fr" and "Entrer en mode d'édition d'Entités" or
 			"Enter Entity editing mode"
 		)
+		btnEntitiesEditing:SetTooltip(
+			hl == "fr" and "Permet d'éditer les entités directement en jeu" or
+			"Allow editing entities directly in-game"
+		)
 		btnEntitiesEditing:SetEnabled(false)
 		-- TODO - donner une arme d'outil + masquer la fenêtre sauf dans le menu Echap
 		-- TODO - ne pas oublier de supprimer l'arme d'outil lors de la fermeture
@@ -1068,6 +1332,10 @@ local function openAssistant(mapName)
 		btnMoveEntitiesToLua:SetText(
 			hl == "fr" and "Retirer plein d'entités & les placer dans un fichier Lua" or
 			"Remove many entities & put them into a Lua file"
+		)
+		btnMoveEntitiesToLua:SetTooltip(
+			hl == "fr" and "Protège une carte en déplaçant certaines de ses entités vers un script Lua" or
+			"Protect a map by moving some of its entities into a Lua script"
 		)
 		local function moveEntitiesToLua()
 			context:moveEntitiesToLua()
@@ -1119,6 +1387,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 			hl == "fr" and "Convertir chaque prop_static en prop_dynamic" or
 			"Convert all prop_static's into prop_dynamic's"
 		)
+		btnPropsStaticToDynamic:SetTooltip(
+			hl == "fr" and "Transforme les prop_statics en prop_dynamics" or
+			"Transform prop_static's into prop_dynamic's"
+		)
 		btnPropsStaticToDynamic.DoClick = function(self)
 			context:convertStaticPropsToDynamic(true)
 			refreshLumpsList()
@@ -1134,6 +1406,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		btnHdrRemove:SetText(
 			hl == "fr" and "Retirer la HDR" or
 			"Remove HDR"
+		)
+		btnHdrRemove:SetTooltip(
+			hl == "fr" and "Enlève la Grande Gamme Dynamique (technologie de compensation d'éclairage dynamique)" or
+			"Suppress the High Dynamic Range (dynamic lighting compensation technology)"
 		)
 		btnHdrRemove.DoClick = function(self)
 			context:removeHdr(true)
@@ -1151,6 +1427,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 			hl == "fr" and "Retirer l'Éclairage" or
 			"Remove Lighting"
 		)
+		btnLightingRemove:SetTooltip(
+			hl == "fr" and "Défait l'étape vrad : révèle la carte en éclairage totalement neutre (jour = nuit), comme avec \"mat_fullbright 1\"" or
+			"Undo the vrad step: reveal the map in totally neutral lighting (day = night), as with \"mat_fullbright 1\""
+		)
 		btnLightingRemove.DoClick = function(self)
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING_HDR"))
 			context:clearLump(false, api.getLumpIdFromLumpName("LUMP_LIGHTING"))
@@ -1167,6 +1447,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		btnRemoveEntitiesByClass:SetText(
 			hl == "fr" and "Retirer entités par classe" or
 			"Remove entities by class"
+		)
+		btnRemoveEntitiesByClass:SetTooltip(
+			hl == "fr" and "Ouvre une liste des classes d'entité avec la possibilité de supprimer" or
+			"Open a list of entity classes with the ability to remove"
 		)
 		btnRemoveEntitiesByClass.DoClick = function(self)
 			openEntitiesByClassRemover(assistant)
@@ -1278,13 +1562,27 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		hdrSpare:SetSize(LUMP_COLUMN_WIDTH_SPARE, LUMP_HEADER_HEIGHT_1 * 2)
 	end
 	
+	local statusBar = vgui.Create("DLabel", assistant); do
+		assistant.statusBar = statusBar
+		statusBar:SetSize(WIDTH_1_1, STATUS_BAR_HEIGHT)
+		local y = assistant:GetTall() - MARGIN - STATUS_BAR_HEIGHT
+		statusBar:SetPos(X_COL_1, y)
+		statusBar:SetContentAlignment(ALIGN_MIDDLE_LEFT)
+		statusBar.Think = statusBar_Think
+	end
+	
 	local btnRevertAll = vgui.Create("DButton", assistant); do
 		assistant.btnRevertAll = btnRevertAll
 		btnRevertAll:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
-		local y = assistant:GetTall() - MARGIN - BUTTON_HEIGHT
+		local _, y = statusBar:GetPos()
+		y = y - MARGIN - BUTTON_HEIGHT
 		local title = (
 			hl == "fr" and "Défaire toutes les modifications" or
 			"Revert all changes"
+		)
+		btnRevertAll:SetTooltip(
+			hl == "fr" and "Défait tous les changements" or
+			"Undo every change"
 		)
 		btnRevertAll:SetPos(X_COL_1, y)
 		btnRevertAll:SetText(title)
@@ -1315,6 +1613,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		btnSave:SetText(
 			hl == "fr" and "Enregistrer la carte modifiée" or
 			"Save the modified map"
+		)
+		btnSave:SetTooltip(
+			hl == "fr" and "Enregistre la carte modifiée dans un nouveau fichier" or
+			"Save the modified map into a new file"
 		)
 		btnSave.DoClick = function(self)
 			DialogFileSelector:new(box, function(selector, folderBase, filenameDst)
