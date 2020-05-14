@@ -3500,9 +3500,13 @@ BspContext = {
 		local string_find = string.find
 		local entitiesText = {}
 		posStart = posStart or 1
-		local posEnd, entityText = nil, nil
+		local posStart_, posEnd, entityText
 		repeat
-			posStart, posEnd, entityText = string_find(lumpContent, "^({\x0A.-\x0A}\x0A)", posStart)
+			posStart_, posEnd, entityText = string_find(lumpContent, "^({\x0A.-\x0A}\x0A)", posStart)
+			if not posStart_ then
+				-- retry with an empty entity keyvalues set:
+				posStart_, posEnd, entityText = string_find(lumpContent, "^({\x0A}\x0A)", posStart)
+			end
 			entitiesText[#entitiesText + 1] = entityText
 			posStart = (posEnd or -1) + 1
 		until not posEnd
