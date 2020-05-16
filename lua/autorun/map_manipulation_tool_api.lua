@@ -3445,7 +3445,7 @@ BspContext = {
 	end,
 	
 	getPresentEntityClasses = function(self, fromDst)
-		-- Return a sorted table of present entity classes
+		-- Return a sorted table of present entity classes and a table with counts (nil for internal entities)
 		-- Note: existing lumps with 0 elements will add the matching class as well.
 		
 		local string_lower = string.lower
@@ -3454,6 +3454,7 @@ BspContext = {
 		
 		-- Inspecting the LUMP_ENTITIES:
 		local entityClasses = {}
+		local entityCountByClass = {}
 		do
 			local lumpContent = self:extractLumpAsText(false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
 			local entitiesText = self:_explodeEntitiesText(lumpContent)
@@ -3464,6 +3465,7 @@ BspContext = {
 					if classname ~= nil then
 						classname = string_lower(tostring(classname))
 						entityClasses[classname] = true
+						entityCountByClass[classname] = (entityCountByClass[classname] or 0) + 1
 					end
 				else
 					print("Could not decode the following entity description:")
@@ -3491,7 +3493,7 @@ BspContext = {
 			table.sort(entityClasses_)
 			entityClasses = entityClasses_
 		end
-		return entityClasses
+		return entityClasses, entityCountByClass
 	end,
 	
 	_explodeEntitiesText = function(cls, lumpContent, posStart) -- static method

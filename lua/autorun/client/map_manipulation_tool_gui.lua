@@ -610,17 +610,30 @@ do
 			else
 				surface.SetTextColor(0, 0, 0)
 			end
-			surface.SetTextPos(4, 7)
 			surface.SetFont("Trebuchet18")
+			local txt_x = 4
+			local txt_w = surface.GetTextSize(self.classname)
+			surface.SetTextPos(txt_x, 7)
 			surface.DrawText(self.classname)
+			if self.entityCount then
+				if self.removed then
+					--surface.SetTextColor(127, 127, 127)
+				else
+					surface.SetTextColor(95, 95, 95)
+				end
+				txt_x = txt_x + txt_w + 6
+				surface.SetTextPos(txt_x, 7)
+				surface.DrawText(self.entityCount)
+			end
 		end
 	end
 	
-	local function makeClassRow(remover, classesList, classname)
+	local function makeClassRow(remover, classesList, classname, entityCount)
 		local rowWidth = classesList:GetWide()
 		local row = vgui.Create("DPanel", classesList); do
 			row.Paint = row_Paint
 			row.classname = classname
+			row.entityCount = entityCount and "(" .. entityCount .. ")" or nil
 			row:SetSize(rowWidth, ROW_HEIGHT)
 		end
 		
@@ -680,12 +693,12 @@ do
 			remover.context = context
 			assistant.remover = remover
 		end
-		local classes = context:getPresentEntityClasses(true)
+		local classes, classCounts = context:getPresentEntityClasses(true)
 		local classesList = vgui.Create("DScrollPanel", remover)
 		classesList:SetPos(MARGIN, TITLE_BAR_THICKNESS + MARGIN)
 		classesList:SetWide(WIDTH_1_1)
 		for i, classname in ipairs(classes) do
-			local row = makeClassRow(remover, classesList, classname)
+			local row = makeClassRow(remover, classesList, classname, classCounts[classname])
 			row:SetPos(0, (i - 1) * (ROW_HEIGHT + ROW_SPACING))
 		end
 		
