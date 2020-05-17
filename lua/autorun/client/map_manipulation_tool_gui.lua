@@ -576,6 +576,8 @@ do
 end
 DialogFileSelector.__index = DialogFileSelector
 
+-- Warning: always edit assistant.OnRemove() to remove windows that depend on the assistant!
+
 local openEntitiesByClassRemover
 do
 	local surface = surface
@@ -709,9 +711,354 @@ do
 		))
 		remover:SetTall(y + classesList:GetTall() + MARGIN)
 		remover:Center()
-		-- TODO - comptages si disponible
 		
 		return remover
+	end
+end
+
+local openMaterialBrowserOverlayDecal
+do
+	local flagsAlphaMask = 2097184 -- $translucent & $vertexalpha
+	
+	local function stripAlpha(flags)
+		-- Unset $translucent & $vertexalpha:
+		return bit.band(flags, bit.bnot(flagsAlphaMask))
+	end
+	
+	local function restoreAlpha(flags, flagsAlpha)
+		-- Set $translucent & $vertexalpha as they originally were:
+		return bit.bor(flags, flagsAlpha)
+	end
+	
+	local copyButtonTooltip
+	
+	local makePreview
+	do
+		surface.CreateFont(
+			"map_manipulation_tool:matBroDetails",
+			{
+				size = 15,
+				weight = 750,
+				outline = true,
+			}
+		)
+		
+		local function preview_Paint(self, w, h)
+			local materialBrowserOverlayDecal = self.materialBrowserOverlayDecal
+			do
+				draw.NoTexture()
+				local whiteStrength
+				if materialBrowserOverlayDecal.enabledBgAnim then
+					whiteStrength = math.floor(RealTime() * 128.) % 510
+					if whiteStrength > 255 then
+						whiteStrength = 510 - whiteStrength
+					end
+					materialBrowserOverlayDecal.whiteStrength = whiteStrength
+				else
+					whiteStrength = materialBrowserOverlayDecal.whiteStrength or 0
+				end
+				surface.SetDrawColor(whiteStrength, whiteStrength, whiteStrength, 255)
+				surface.DrawTexturedRect(0, 0, w, h)
+			end
+			-- if self.textureId then
+			if self.material then
+				surface.SetMaterial(self.material)
+				surface.SetDrawColor(255, 255, 255, 255)
+				surface.DrawTexturedRect(0, 0, w, h)
+			end
+			local hovered = (self:IsHovered() or self:IsChildHovered(true))
+			self.copyButton:SetVisible(hovered)
+			if hovered then
+				surface.SetFont("map_manipulation_tool:matBroDetails")
+				local txt_x, txt_y = 4, 2
+				local txt_w, txt_h = surface.GetTextSize(self.materialPath)
+				draw.NoTexture()
+				surface.SetDrawColor(0, 0, 0, 170)
+				surface.DrawTexturedRect(txt_x - 4, txt_y - 2, txt_w + 8, txt_h + 4)
+				self.materialDisplay:Draw(txt_x, txt_y, TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+			end
+		end
+		
+		local copyButton_DoClick = function(self)
+			SetClipboardText(self:GetParent().materialPath)
+		end
+		
+		function makePreview(parent, w, h, materialPath, countOverlay, countDecal)
+			local previewMaterial
+			local flagsAlpha = 0
+			do
+				local keyValues
+				local originalMaterial = Material(materialPath)
+				if originalMaterial and not originalMaterial:IsError() then
+					keyValues = originalMaterial:GetKeyValues()
+				end
+				if not keyValues then
+					keyValues = {
+						["$basetexture"] = "debug/debugempty",
+					}
+				end
+				local flags = keyValues["$flags"] or 0
+				flagsAlpha = bit.band(flags, flagsAlphaMask)
+				-- These 4 keyvalues would be double-defined if set:
+				keyValues["$flags_defined"] = nil
+				keyValues["$flags_defined2"] = nil
+				keyValues["$flags"] = nil
+				keyValues["$flags2"] = nil
+				previewMaterial = CreateMaterial(
+					"map_manipulation_tool:" .. materialPath,
+					"unlitgeneric",
+					keyValues
+				)
+				if previewMaterial then
+					flags = stripAlpha(flags)
+					flags = bit.bor(flags, 32768) -- set $ignorez
+					previewMaterial:SetInt("$flags", flags)
+				end
+			end
+			local preview = vgui.Create("DPanel", parent); do
+				preview:SetSize(w, h)
+				preview.Paint = preview_Paint
+				preview.materialPath = materialPath
+				--preview.textureId = surface.GetTextureID(materialPath)
+				preview.material = previewMaterial
+				preview.flagsAlpha = flagsAlpha
+				local textLines = {
+					materialPath,
+					"",
+					(
+						hl == "fr" and
+						"Utilisations :" or
+						"Uses:"),
+				}
+				if countOverlay > 0 then
+					textLines[#textLines + 1] = "► " .. countOverlay .. " (info_overlay)"
+				end
+				if countDecal > 0 then
+					textLines[#textLines + 1] = "► " .. countDecal .. " (infodecal)"
+				end
+				preview.materialDisplay = markup.Parse(
+					"<font=map_manipulation_tool:matBroDetails><colour=255,255,0,255>" .. table.concat(textLines, "\n"),
+					w - 4
+				)
+			end
+			local copyButton = vgui.Create("DButton", preview); do
+				preview.copyButton = copyButton
+				copyButton:SetSize(BUTTON_HEIGHT, BUTTON_HEIGHT)
+				copyButton:SetPos(
+					w - MARGIN - BUTTON_HEIGHT,
+					h - MARGIN - BUTTON_HEIGHT
+				)
+				copyButton.DoClick = copyButton_DoClick
+				copyButton:SetImage("icon16/page_copy.png")
+				copyButton:SetText("")
+				copyButton:SetTooltip(copyButtonTooltip)
+				copyButton:SetVisible(false)
+			end
+			return preview
+		end
+	end
+	
+	local buttonWidth_1_1 = 640 - MARGIN - MARGIN - SCROLL_BAR_THICKNESS - MARGIN
+	local buttonWidth_1_2 = (buttonWidth_1_1 - MARGIN) / 2
+	local buttonWidth_1_3 = (buttonWidth_1_1 - MARGIN - MARGIN) / 3
+	local buttonWidth_2_3 = buttonWidth_1_3 + MARGIN + buttonWidth_1_3
+	local buttonX_COL_1 = 0
+	local buttonX_COL_2_2 = MARGIN + buttonWidth_1_2
+	local buttonX_COL_2_3 = MARGIN + buttonWidth_1_3
+	local buttonX_COL_3_3 = MARGIN + buttonWidth_2_3
+	
+	local textToggleAlpha_Enable
+	local textToggleAlpha_Disable
+	local textToggleBgAnim_Enable
+	local textToggleBgAnim_Disable
+	
+	local function btnToggleAlpha_DoClick(self)
+		local materialBrowserOverlayDecal = self.materialBrowserOverlayDecal
+		if materialBrowserOverlayDecal.enabledAlpha then
+			materialBrowserOverlayDecal.enabledAlpha = false
+			self:SetText(textToggleAlpha_Enable)
+			for materialPath, preview in pairs(materialBrowserOverlayDecal.previews) do
+				preview.material:SetInt("$flags", stripAlpha(preview.material:GetInt("$flags")))
+			end
+		else
+			materialBrowserOverlayDecal.enabledAlpha = true
+			self:SetText(textToggleAlpha_Disable)
+			for materialPath, preview in pairs(materialBrowserOverlayDecal.previews) do
+				preview.material:SetInt("$flags", restoreAlpha(preview.material:GetInt("$flags"), preview.flagsAlpha))
+			end
+		end
+	end
+	
+	local function btnToggleBgAnim_DoClick(self)
+		local materialBrowserOverlayDecal = self.materialBrowserOverlayDecal
+		if materialBrowserOverlayDecal.enabledBgAnim then
+			materialBrowserOverlayDecal.enabledBgAnim = false
+			self:SetText(textToggleBgAnim_Enable)
+		else
+			materialBrowserOverlayDecal.enabledBgAnim = true
+			self:SetText(textToggleBgAnim_Disable)
+		end
+	end
+	
+	local conVarTextureDetails = GetConVar("mat_picmip")
+	
+	local previewResolutions = {128, 192, 256, 384, 512, 768, 1024, 1536, 2048}
+	
+	function openMaterialBrowserOverlayDecal(assistant)
+		if IsValid(assistant.materialBrowserOverlayDecal) then
+			assistant.materialBrowserOverlayDecal:Remove()
+		end
+		local scr_w, scr_h = ScrW(), ScrH()
+		local previewResolution
+		local previewsPerRow
+		do
+			-- The extra MARGIN is the ending margin, which is not required but used to determine the number of fitting previews.
+			local widthBase = scr_w - MARGIN - MARGIN - SCROLL_BAR_THICKNESS - MARGIN + MARGIN
+			local heightBase = scr_h - TITLE_BAR_THICKNESS - MARGIN - MARGIN + MARGIN
+			for i = #previewResolutions, 1, -1 do
+				-- The goal is to have a minimum of 3 previews per row and 2 rows fitting on the screen.
+				local resolution = previewResolutions[i]
+				previewsPerRow = math.floor(widthBase / (resolution + MARGIN))
+				local rowsOnScreen = math.floor(heightBase / (resolution + MARGIN))
+				if (rowsOnScreen >= 2 and previewsPerRow >= 3) or i == 1 then
+					previewResolution = resolution
+					break
+				end
+			end
+		end
+		local materialBrowserOverlayDecal = vgui.Create("DFrame"); do
+			materialBrowserOverlayDecal:MakePopup()
+			materialBrowserOverlayDecal:SetKeyboardInputEnabled(false)
+			materialBrowserOverlayDecal:SetWide(math.max(
+				640,
+				MARGIN
+				+ ((previewResolution + MARGIN) * previewsPerRow)
+				- MARGIN
+				+ MARGIN
+				+ SCROLL_BAR_THICKNESS
+				+ MARGIN
+			))
+			materialBrowserOverlayDecal:SetTall(scr_h)
+			materialBrowserOverlayDecal:SetTitle(
+				hl == "fr" and "Matériaux : info_overlay & infodecal" or
+				"Materials: info_overlay & infodecal"
+			)
+			materialBrowserOverlayDecal.btnMinim:SetVisible(false)
+			materialBrowserOverlayDecal.btnMaxim:SetVisible(false)
+			materialBrowserOverlayDecal.assistant = assistant
+			materialBrowserOverlayDecal.context = context
+			assistant.materialBrowserOverlayDecal = materialBrowserOverlayDecal
+		end
+		local scrollArea = vgui.Create("DScrollPanel", materialBrowserOverlayDecal); do
+			scrollArea:SetPos(MARGIN, TITLE_BAR_THICKNESS + MARGIN)
+			scrollArea:SetWide(materialBrowserOverlayDecal:GetWide() - MARGIN - MARGIN)
+			scrollArea:SetTall(materialBrowserOverlayDecal:GetTall() - TITLE_BAR_THICKNESS - MARGIN - MARGIN)
+		end
+		local introText = vgui.Create("DLabel", scrollArea); do
+			introText:SetPos(0, 0)
+			local introTextLines = {
+				(
+					hl == "fr" and
+					"N'oublie pas de monter tout le contenu nécessaire pour tout voir." or
+					"Do not forget to mount all the required content to see everything."),
+			}
+			if "maps/" .. string.lower(game.GetMap()) .. ".bsp" ~= string.lower(assistant.mapFilename) then
+				introTextLines[#introTextLines + 1] = (
+					hl == "fr" and
+					"La carte chargée dans l'outil est différente celle chargée dans le jeu. Du contenu peut manquer." or
+					"The map loaded in the tool is different from the one loaded in the game. Some content may be missing."
+				)
+			end
+			if conVarTextureDetails:GetInt() > 0 then
+				introTextLines[#introTextLines + 1] = (
+					hl == "fr" and
+					"Le niveau de détail des textures est paramétré en-dessous du maximum." or
+					"The level of texture detail is configured below its maximum."
+				)
+				introTextLines[#introTextLines + 1] = (
+					hl == "fr" and
+					"Tape ceci dans la console pour obtenir le maximum de détail : mat_picmip 0" or
+					"Type this into the console to get the maximum detail: mat_picmip 0"
+				)
+			end
+			introText:SetText(table.concat(introTextLines, "\n"))
+			introText:SizeToContents()
+		end
+		local btnToggleAlpha = vgui.Create("DButton", scrollArea); do
+			btnToggleAlpha.materialBrowserOverlayDecal = materialBrowserOverlayDecal
+			local x, y = introText:GetPos()
+			y = y + introText:GetTall() + MARGIN
+			x = buttonX_COL_1
+			btnToggleAlpha:SetPos(x, y)
+			btnToggleAlpha:SetSize(buttonWidth_1_2, BUTTON_HEIGHT)
+			btnToggleAlpha.DoClick = btnToggleAlpha_DoClick
+			textToggleAlpha_Enable = (
+				hl == "fr" and
+				"Activer transparence" or
+				"Enable transparency"
+			)
+			textToggleAlpha_Disable = (
+				hl == "fr" and
+				"Désactiver transparence" or
+				"Disable transparency"
+			)
+			materialBrowserOverlayDecal.enabledAlpha = false
+			btnToggleAlpha:SetText(textToggleAlpha_Enable)
+		end
+		local btnToggleBgAnim = vgui.Create("DButton", scrollArea); do
+			btnToggleBgAnim.materialBrowserOverlayDecal = materialBrowserOverlayDecal
+			local x, y = btnToggleAlpha:GetPos()
+			x = buttonX_COL_2_2
+			btnToggleBgAnim:SetPos(x, y)
+			btnToggleBgAnim:SetSize(buttonWidth_1_2, BUTTON_HEIGHT)
+			btnToggleBgAnim.DoClick = btnToggleBgAnim_DoClick
+			textToggleBgAnim_Enable = (
+				hl == "fr" and
+				"Activer animation arrière-plan" or
+				"Enable background animation"
+			)
+			textToggleBgAnim_Disable = (
+				hl == "fr" and
+				"Arrêter animation arrière-plan" or
+				"Stop background animation"
+			)
+			materialBrowserOverlayDecal.enabledBgAnim = true
+			btnToggleBgAnim:SetText(textToggleBgAnim_Disable)
+		end
+		copyButtonTooltip = (
+			hl == "fr" and
+			"Copier" or
+			"Copy"
+		)
+		local context = assistant.context
+		do
+			local allMaterials, countsOverlay, countsDecal = context:getMaterialsOverlayDecal(true)
+			--allMaterials[#allMaterials] = "overlays/shorewave002a" -- debug
+			local column = 0
+			local x, y = btnToggleAlpha:GetPos()
+			x = 0
+			y = y + btnToggleAlpha:GetTall() + MARGIN
+			materialBrowserOverlayDecal.previews = {}
+			for _, materialPath in ipairs(allMaterials) do
+				if column >= previewsPerRow then
+					column = 0
+					x = 0
+					y = y + previewResolution + MARGIN
+				end
+				local preview = makePreview(
+					scrollArea,
+					previewResolution, previewResolution,
+					materialPath,
+					countsOverlay and countsOverlay[materialPath] or 0,
+					countsDecal and countsDecal[materialPath] or 0
+				)
+				preview:SetPos(x, y)
+				preview.materialBrowserOverlayDecal = materialBrowserOverlayDecal
+				materialBrowserOverlayDecal.previews[materialPath] = preview
+				column = column + 1
+				x = x + previewResolution + MARGIN
+			end
+		end
 	end
 end
 
@@ -1270,8 +1617,12 @@ local function openAssistant(mapName)
 			if IsValid(self.remover) then
 				self.remover:Remove()
 			end
+			if IsValid(self.materialBrowserOverlayDecal) then
+				self.materialBrowserOverlayDecal:Remove()
+			end
 		end
 		assistant.context = context
+		assistant.mapFilename = mapName
 	end
 	
 	local mapDetails = vgui.Create("DListView", assistant); do
@@ -1415,7 +1766,7 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		local _, y = mapDetails:GetPos()
 		y = y + mapDetails:GetTall() + MARGIN
 		btnHdrRemove:SetPos(X_COL_1, y)
-		btnHdrRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
+		btnHdrRemove:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
 		btnHdrRemove:SetText(
 			hl == "fr" and "Retirer la HDR" or
 			"Remove HDR"
@@ -1435,7 +1786,7 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		local x, y = btnHdrRemove:GetPos()
 		x = x + btnHdrRemove:GetWide() + MARGIN
 		btnLightingRemove:SetPos(x, y)
-		btnLightingRemove:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
+		btnLightingRemove:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
 		btnLightingRemove:SetText(
 			hl == "fr" and "Retirer l'Éclairage" or
 			"Remove Lighting"
@@ -1453,10 +1804,10 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 	
 	local btnRemoveEntitiesByClass = vgui.Create("DButton", assistant); do
 		assistant.btnRemoveEntitiesByClass = btnRemoveEntitiesByClass
-		local x, y = btnLightingRemove:GetPos()
-		x = x + btnLightingRemove:GetWide() + MARGIN
+		local x, y = btnHdrRemove:GetPos()
+		y = y + btnHdrRemove:GetTall() + MARGIN
 		btnRemoveEntitiesByClass:SetPos(x, y)
-		btnRemoveEntitiesByClass:SetSize(WIDTH_1_3, BUTTON_HEIGHT)
+		btnRemoveEntitiesByClass:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
 		btnRemoveEntitiesByClass:SetText(
 			hl == "fr" and "Retirer entités par classe" or
 			"Remove entities by class"
@@ -1470,9 +1821,28 @@ Control is given by adding a hook on the event "map_manipulation_tool:moveEntiti
 		end
 	end
 	
+	local btnBrowseMaterialsOverlayDecal = vgui.Create("DButton", assistant); do
+		assistant.btnBrowseMaterialsOverlayDecal = btnBrowseMaterialsOverlayDecal
+		local x, y = btnRemoveEntitiesByClass:GetPos()
+		x = x + btnRemoveEntitiesByClass:GetWide() + MARGIN
+		btnBrowseMaterialsOverlayDecal:SetPos(x, y)
+		btnBrowseMaterialsOverlayDecal:SetSize(WIDTH_1_2, BUTTON_HEIGHT)
+		btnBrowseMaterialsOverlayDecal:SetText(
+			hl == "fr" and "Parcourir matériaux overlays & decals" or
+			"Browse overlays & decals materials"
+		)
+		btnBrowseMaterialsOverlayDecal:SetTooltip(
+			hl == "fr" and "Ouvre une boîte de prévisualisation des matériaux utilisés dans les entités info_overlay et infodecal" or
+			"Open a box to preview materials used in info_overlay and infodecal entities"
+		)
+		btnBrowseMaterialsOverlayDecal.DoClick = function(self)
+			openMaterialBrowserOverlayDecal(assistant)
+		end
+	end
+	
 	local hdrId = makeLumpColumnHeader(assistant, "Id"); do
-		local x, y = btnHdrRemove:GetPos()
-		y = y + btnHdrRemove:GetTall() + MARGIN
+		local x, y = btnRemoveEntitiesByClass:GetPos()
+		y = y + btnRemoveEntitiesByClass:GetTall() + MARGIN
 		hdrId:SetPos(x, y)
 		hdrId:SetSize(LUMP_COLUMN_WIDTH_ID, LUMP_HEADER_HEIGHT_1 * 2)
 	end

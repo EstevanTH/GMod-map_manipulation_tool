@@ -38,6 +38,7 @@ BUFFER_LENGTH = 4194304 -- 4 MiB
 FULL_ZERO_BUFFER = nil -- BUFFER_LENGTH of null data, set only on 1st API use
 local WEAK_KEYS = {__mode = "k"}
 local WEAK_VALUES = {__mode = "v"}
+local DICTIONARY_DEFAULT_0 = {__index = function() return 0 end}
 local FLOAT_TEXT_NAN
 local FLOAT_TEXT_INF_POSI
 local FLOAT_TEXT_INF_NEGA
@@ -3327,6 +3328,112 @@ BspContext = {
 		end
 		
 		return materials
+	end,
+	
+	getMaterialsOverlayDecal = function(self, fromDst)
+		-- Returns 3 items:
+		-- - a sorted list of materials used in info_overlay and infodecal entities
+		-- - a table: for each material, the number of uses in info_overlay entities
+		-- - a table: for each material, the number of uses in infodecal entities
+		-- The material path case is preserved, with a preference for the one mentioned in infodecal.
+		-- In case of an error, the respective count table will be false.
+		
+		local allMaterials
+		local countsOverlay = false
+		local countsDecal = false
+		
+		local materialCaseLowerToOriginal = {}
+		
+		do
+			local success, overlaysKeyValues = pcall(self.getInfoOverlaysList, self, fromDst)
+			if success then
+				countsOverlay = setmetatable({}, DICTIONARY_DEFAULT_0)
+				for _, overlayKeyValues in ipairs(overlaysKeyValues) do
+					local material = overlayKeyValues["material"]
+					local materialLower = string.lower(material)
+					materialCaseLowerToOriginal[materialLower] = material
+					countsOverlay[materialLower] = countsOverlay[materialLower] + 1
+				end
+			else
+				ErrorNoHalt(overlaysKeyValues .. "\n")
+			end
+		end
+		
+		do
+			local util_KeyValuesToTable = util.KeyValuesToTable
+			local success
+			local lumpContent
+			do
+				success, lumpContent = pcall(self.extractLumpAsText, self, false, lumpNameToLuaIndex.LUMP_ENTITIES, fromDst)
+				if not success then
+					ErrorNoHalt(lumpContent .. "\n")
+				end
+			end
+			local entitiesText
+			if success and lumpContent then
+				success, entitiesText = pcall(self._explodeEntitiesText, self, lumpContent)
+				if success then
+					countsDecal = setmetatable({}, DICTIONARY_DEFAULT_0)
+				else
+					ErrorNoHalt(entitiesText .. "\n")
+				end
+			end
+			if entitiesText then
+				for i = 1, #entitiesText do
+					local decalKeyValues = util_KeyValuesToTable('"entities[' .. i .. ']"\x0A' .. entitiesText[i], false, false)
+					if decalKeyValues then
+						local classname = decalKeyValues["classname"]
+						classname = classname and tostring(classname)
+						classname = classname and string.lower(classname)
+						if classname == "infodecal" then
+							local material = decalKeyValues["texture"]
+							local materialLower = string.lower(material)
+							materialCaseLowerToOriginal[materialLower] = material
+							countsDecal[materialLower] = countsDecal[materialLower] + 1
+						end
+					end
+				end
+			end
+		end
+		
+		do
+			-- Making & sorting the list:
+			local allMaterials_ = {}
+			for _, materialCounts in ipairs({countsOverlay, countsDecal}) do
+				if materialCounts then
+					for materialLower in pairs(materialCounts) do
+						allMaterials_[materialLower] = true
+					end
+				end
+			end
+			allMaterials = {}
+			for materialLower in pairs(allMaterials_) do
+				allMaterials[#allMaterials + 1] = materialLower
+			end
+			table.sort(allMaterials)
+			
+			-- Restoring materials case:
+			local countsOverlay_ = countsOverlay
+			if countsOverlay_ then
+				countsOverlay = setmetatable({}, DICTIONARY_DEFAULT_0)
+			end
+			local countsDecal_ = countsDecal
+			if countsDecal_ then
+				countsDecal = setmetatable({}, DICTIONARY_DEFAULT_0)
+			end
+			for i, materialLower in ipairs(allMaterials) do
+				local material = materialCaseLowerToOriginal[materialLower]
+				allMaterials[i] = material
+				if countsOverlay_ then
+					countsOverlay[material] = countsOverlay_[materialLower]
+				end
+				if countsDecal_ then
+					countsDecal[material] = countsDecal_[materialLower]
+				end
+			end
+		end
+		
+		return allMaterials, countsOverlay, countsDecal
 	end,
 	
 	_getTexdataList = function(self, fromDst)
