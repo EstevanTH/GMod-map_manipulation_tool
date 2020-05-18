@@ -783,33 +783,79 @@ do
 			SetClipboardText(self:GetParent().materialPath)
 		end
 		
+		local patchIncludeSections = {"insert", "replace"}
+		
 		function makePreview(parent, w, h, materialPath, countOverlay, countDecal)
 			local previewMaterial
 			local flagsAlpha = 0
 			do
 				local keyValues
-				local originalMaterial = Material(materialPath)
-				if originalMaterial and not originalMaterial:IsError() then
-					keyValues = originalMaterial:GetKeyValues()
+				do
+					local keyValues_
+					local shader
+					do
+						local materialText = file.Read("materials/" .. materialPath .. ".vmt", "GAME")
+						if materialText then
+							keyValues_ = util.KeyValuesToTable('"material"\n{\n' .. materialText .. "\n}")
+							shader, keyValues_ = next(keyValues_) -- select material content
+							if not istable(keyValues_) then
+								keyValues_ = nil
+							end
+						end
+					end
+					if keyValues_ then
+						shader = string.lower(tostring(shader))
+						if shader == "patch" then
+							-- Another material must be included:
+							local keyValues2
+							do
+								local material2Path = keyValues_["include"]
+								if material2Path then
+									local material2Text = file.Read(material2Path, "GAME")
+									if material2Text then
+										keyValues2 = util.KeyValuesToTable(material2Text)
+										if not istable(keyValues2) then
+											keyValues2 = nil
+										end
+									end
+								end
+							end
+							if keyValues2 then
+								for _, section in ipairs(patchIncludeSections) do
+									local keyValues__ = keyValues_[section]
+									if istable(keyValues__) then
+										for k, v in pairs(keyValues__) do
+											if v == "" then
+												keyValues2[k] = nil
+											else
+												keyValues2[k] = v
+											end
+										end
+									end
+								end
+								keyValues = keyValues2
+							end
+						else
+							-- Simply use the material keyvalues:
+							keyValues = keyValues_
+						end
+					end
 				end
 				if not keyValues then
 					keyValues = {
 						["$basetexture"] = "debug/debugempty",
 					}
 				end
-				local flags = keyValues["$flags"] or 0
-				flagsAlpha = bit.band(flags, flagsAlphaMask)
-				-- These 4 keyvalues would be double-defined if set:
-				keyValues["$flags_defined"] = nil
-				keyValues["$flags_defined2"] = nil
-				keyValues["$flags"] = nil
-				keyValues["$flags2"] = nil
+				keyValues["$envmap"] = nil
+				keyValues["$envmapmask"] = nil
 				previewMaterial = CreateMaterial(
 					"map_manipulation_tool:" .. materialPath,
 					"unlitgeneric",
 					keyValues
 				)
 				if previewMaterial then
+					local flags = previewMaterial:GetInt("$flags") or 0
+					flagsAlpha = bit.band(flags, flagsAlphaMask)
 					flags = stripAlpha(flags)
 					flags = bit.bor(flags, 32768) -- set $ignorez
 					previewMaterial:SetInt("$flags", flags)
